@@ -33,12 +33,12 @@ const (
 
 // Dependencies groups the external dependencies the command handler needs.
 type Dependencies struct {
-	Client          *pluginapi.Client
-	CursorClientFn  func() cursor.Client
-	Store           kvstore.KVStore
-	BotUserID       string
-	SiteURL         string
-	PluginID        string
+	Client         *pluginapi.Client
+	CursorClientFn func() cursor.Client
+	Store          kvstore.KVStore
+	BotUserID      string
+	SiteURL        string
+	PluginID       string
 }
 
 // Handler processes /cursor slash commands.
