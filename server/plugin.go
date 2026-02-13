@@ -167,12 +167,12 @@ func (p *Plugin) OnActivate() error {
 
 	// Register slash commands (Phase 3).
 	p.commandHandler = command.NewHandler(command.Dependencies{
-		Client:       p.client,
-		CursorClient: p.cursorClient,
-		Store:        p.kvstore,
-		BotUserID:    botUserID,
-		SiteURL:      siteURL,
-		PluginID:     "com.mattermost.plugin-cursor",
+		Client:         p.client,
+		CursorClientFn: p.getCursorClient,
+		Store:          p.kvstore,
+		BotUserID:      botUserID,
+		SiteURL:        siteURL,
+		PluginID:       "com.mattermost.plugin-cursor",
 	})
 
 	// Schedule background poller for agent status updates.

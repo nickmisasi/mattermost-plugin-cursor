@@ -366,14 +366,16 @@ func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cursorClient := p.getCursorClient()
-	if cursorClient != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
-			p.API.LogError("Failed to stop agent via Cursor API", "agentID", agentID, "error", apiErr.Error())
-			http.Error(w, "Failed to stop agent via Cursor API", http.StatusBadGateway)
-			return
-		}
+	if cursorClient == nil {
+		http.Error(w, "Cursor client not configured", http.StatusBadGateway)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
+		p.API.LogError("Failed to stop agent via Cursor API", "agentID", agentID, "error", apiErr.Error())
+		http.Error(w, "Failed to stop agent via Cursor API", http.StatusBadGateway)
+		return
 	}
 
 	// Update KV store.

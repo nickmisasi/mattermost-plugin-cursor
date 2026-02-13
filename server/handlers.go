@@ -694,6 +694,7 @@ func formatAPIError(action string, err error) string {
 
 // sanitizeBranchName creates a branch-name-safe slug from a prompt.
 // Takes the first ~50 chars, lowercases, replaces non-alphanumeric with hyphens.
+// Falls back to a timestamp-based name if the slug is empty (e.g. all-emoji prompt).
 func sanitizeBranchName(prompt string) string {
 	s := strings.ToLower(prompt)
 	if len(s) > 50 {
@@ -702,5 +703,8 @@ func sanitizeBranchName(prompt string) string {
 	re := regexp.MustCompile(`[^a-z0-9]+`)
 	s = re.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
+	if s == "" {
+		s = fmt.Sprintf("agent-%d", time.Now().Unix())
+	}
 	return "cursor/" + s
 }

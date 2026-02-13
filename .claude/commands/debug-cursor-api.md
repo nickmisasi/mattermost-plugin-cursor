@@ -177,25 +177,26 @@ The Cursor API uses Basic Auth with the API key as the username and empty passwo
 ### Test API Key
 
 ```bash
-curl -u "YOUR_API_KEY:" https://api.cursor.com/v0/me
+export CURSOR_API_KEY="your_key_here"
+curl -u "$CURSOR_API_KEY:" https://api.cursor.com/v0/me
 ```
 
 ### List Agents
 
 ```bash
-curl -u "YOUR_API_KEY:" "https://api.cursor.com/v0/agents?limit=10"
+curl -u "$CURSOR_API_KEY:" "https://api.cursor.com/v0/agents?limit=10"
 ```
 
 ### Get Agent Status
 
 ```bash
-curl -u "YOUR_API_KEY:" https://api.cursor.com/v0/agents/AGENT_ID
+curl -u "$CURSOR_API_KEY:" https://api.cursor.com/v0/agents/AGENT_ID
 ```
 
 ### Launch Agent
 
 ```bash
-curl -u "YOUR_API_KEY:" \
+curl -u "$CURSOR_API_KEY:" \
   -X POST \
   -H "Content-Type: application/json" \
   -d '{
@@ -210,13 +211,13 @@ curl -u "YOUR_API_KEY:" \
 ### List Models
 
 ```bash
-curl -u "YOUR_API_KEY:" https://api.cursor.com/v0/models
+curl -u "$CURSOR_API_KEY:" https://api.cursor.com/v0/models
 ```
 
 ### Stop Agent
 
 ```bash
-curl -u "YOUR_API_KEY:" -X POST https://api.cursor.com/v0/agents/AGENT_ID/stop
+curl -u "$CURSOR_API_KEY:" -X POST https://api.cursor.com/v0/agents/AGENT_ID/stop
 ```
 
 ## Step 7: Check Plugin Health

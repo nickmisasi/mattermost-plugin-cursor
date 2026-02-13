@@ -121,6 +121,17 @@ func verifyWebhookSignature(secret []byte, signature string, body []byte) bool {
 	return hmac.Equal(sigBytes, expected)
 }
 
+// statusRecorder wraps http.ResponseWriter to capture the status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
 // --- Main webhook handler ---
 
 func (p *Plugin) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
@@ -161,24 +172,25 @@ func (p *Plugin) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Route by event type.
+	// 4. Route by event type, recording the response status.
+	sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	eventType := r.Header.Get(eventHeader)
 	p.API.LogDebug("GitHub webhook received", "event", eventType, "delivery", deliveryID)
 
 	switch eventType {
 	case eventPing:
-		p.handlePingEvent(w, body)
+		p.handlePingEvent(sr, body)
 	case eventPullRequest:
-		p.handlePullRequestEvent(w, body)
+		p.handlePullRequestEvent(sr, body)
 	case eventPullRequestReview:
-		p.handlePullRequestReviewEvent(w, body)
+		p.handlePullRequestReviewEvent(sr, body)
 	default:
 		p.API.LogDebug("Ignoring unhandled GitHub event type", "event", eventType)
-		w.WriteHeader(http.StatusOK)
+		sr.WriteHeader(http.StatusOK)
 	}
 
-	// 5. Mark delivery as processed (after successful handling).
-	if deliveryID != "" {
+	// 5. Mark delivery as processed only after successful handling.
+	if deliveryID != "" && sr.status >= 200 && sr.status < 300 {
 		_ = p.kvstore.MarkDeliveryProcessed(deliveryID)
 	}
 }

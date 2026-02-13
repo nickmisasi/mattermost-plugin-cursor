@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -214,12 +215,12 @@ func setupTest(t *testing.T) *testEnv {
 	s := &mockKVStore{}
 
 	handler := NewHandler(Dependencies{
-		Client:       client,
-		CursorClient: cc,
-		Store:        s,
-		BotUserID:    "bot-user-id",
-		SiteURL:      "http://localhost:8065",
-		PluginID:     "com.mattermost.plugin-cursor",
+		Client:         client,
+		CursorClientFn: func() cursor.Client { return cc },
+		Store:          s,
+		BotUserID:      "bot-user-id",
+		SiteURL:        "http://localhost:8065",
+		PluginID:       "com.mattermost.plugin-cursor",
 	})
 
 	return &testEnv{
@@ -838,11 +839,10 @@ func TestSanitizeBranchName(t *testing.T) {
 	}{
 		{"fix the login bug", "fix-the-login-bug"},
 		{"Fix Bug #123!", "fix-bug-123"},
-		{"a very long prompt that exceeds forty characters and should be truncated here", "a-very-long-prompt-that-exceeds-forty-ch"},
+		{"a very long prompt that exceeds fifty characters and should be truncated", "a-very-long-prompt-that-exceeds-fifty-characters-a"},
 		{"---leading-and-trailing---", "leading-and-trailing"},
 		{"UPPERCASE text", "uppercase-text"},
 		{"hello", "hello"},
-		{"", ""},
 	}
 
 	for _, tt := range tests {
@@ -850,6 +850,12 @@ func TestSanitizeBranchName(t *testing.T) {
 			assert.Equal(t, tt.expected, sanitizeBranchName(tt.input))
 		})
 	}
+
+	// Non-alpha prompts should produce a fallback name instead of empty string.
+	t.Run("all non-alpha falls back to agent timestamp", func(t *testing.T) {
+		result := sanitizeBranchName("!!!")
+		assert.True(t, strings.HasPrefix(result, "agent-"), "expected fallback prefix, got: %s", result)
+	})
 }
 
 func TestEphemeralResponse(t *testing.T) {
@@ -872,12 +878,12 @@ func setupTestNilClient(t *testing.T) *testEnv {
 	s := &mockKVStore{}
 
 	handler := NewHandler(Dependencies{
-		Client:       client,
-		CursorClient: nil,
-		Store:        s,
-		BotUserID:    "bot-user-id",
-		SiteURL:      "http://localhost:8065",
-		PluginID:     "com.mattermost.plugin-cursor",
+		Client:         client,
+		CursorClientFn: func() cursor.Client { return nil },
+		Store:          s,
+		BotUserID:      "bot-user-id",
+		SiteURL:        "http://localhost:8065",
+		PluginID:       "com.mattermost.plugin-cursor",
 	})
 
 	return &testEnv{

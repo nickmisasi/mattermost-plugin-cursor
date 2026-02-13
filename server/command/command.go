@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,12 +33,12 @@ const (
 
 // Dependencies groups the external dependencies the command handler needs.
 type Dependencies struct {
-	Client       *pluginapi.Client
-	CursorClient cursor.Client
-	Store        kvstore.KVStore
-	BotUserID    string
-	SiteURL      string
-	PluginID     string
+	Client          *pluginapi.Client
+	CursorClientFn  func() cursor.Client
+	Store           kvstore.KVStore
+	BotUserID       string
+	SiteURL         string
+	PluginID        string
 }
 
 // Handler processes /cursor slash commands.
@@ -127,7 +128,7 @@ func (h *Handler) Handle(args *model.CommandArgs) (*model.CommandResponse, error
 }
 
 func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse, error) {
-	if h.deps.CursorClient == nil {
+	if h.deps.CursorClientFn() == nil {
 		return ephemeralResponse(errNoCursorClient), nil
 	}
 
@@ -195,7 +196,7 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	agent, err := h.deps.CursorClient.LaunchAgent(ctx, launchReq)
+	agent, err := h.deps.CursorClientFn().LaunchAgent(ctx, launchReq)
 	if err != nil {
 		return ephemeralResponse(formatAPIError("Failed to launch agent", err)), nil
 	}
@@ -215,6 +216,7 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 		EmojiName: "hourglass_flowing_sand",
 	})
 
+	now := time.Now().UnixMilli()
 	_ = h.deps.Store.SaveAgent(&kvstore.AgentRecord{
 		CursorAgentID: agent.ID,
 		PostID:        botPost.Id,
@@ -224,6 +226,11 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 		Status:        string(agent.Status),
 		Repository:    repo,
 		Branch:        branch,
+		TargetBranch:  launchReq.Target.BranchName,
+		Prompt:        parsed.Prompt,
+		Model:         cursorModel,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	})
 	_ = h.deps.Store.SetThreadAgent(botPost.Id, agent.ID)
 
@@ -231,7 +238,7 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 }
 
 func (h *Handler) executeList(args *model.CommandArgs) (*model.CommandResponse, error) {
-	if h.deps.CursorClient == nil {
+	if h.deps.CursorClientFn() == nil {
 		return ephemeralResponse(errNoCursorClient), nil
 	}
 
@@ -247,7 +254,7 @@ func (h *Handler) executeList(args *model.CommandArgs) (*model.CommandResponse, 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	remoteResp, remoteErr := h.deps.CursorClient.ListAgents(ctx, 100, "")
+	remoteResp, remoteErr := h.deps.CursorClientFn().ListAgents(ctx, 100, "")
 	remoteMap := make(map[string]cursor.Agent)
 	if remoteErr == nil && remoteResp != nil {
 		for _, ra := range remoteResp.Agents {
@@ -285,7 +292,7 @@ func (h *Handler) executeStatus(args *model.CommandArgs, params []string) (*mode
 		return ephemeralResponse("Usage: `/cursor status <agentID>`\nGet agent IDs from `/cursor list`."), nil
 	}
 
-	if h.deps.CursorClient == nil {
+	if h.deps.CursorClientFn() == nil {
 		return ephemeralResponse(errNoCursorClient), nil
 	}
 
@@ -294,7 +301,7 @@ func (h *Handler) executeStatus(args *model.CommandArgs, params []string) (*mode
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	remoteAgent, err := h.deps.CursorClient.GetAgent(ctx, agentID)
+	remoteAgent, err := h.deps.CursorClientFn().GetAgent(ctx, agentID)
 	if err != nil {
 		return ephemeralResponse(formatAPIError(fmt.Sprintf("Failed to fetch agent `%s`", agentID), err)), nil
 	}
@@ -331,7 +338,7 @@ func (h *Handler) executeCancel(args *model.CommandArgs, params []string) (*mode
 		return ephemeralResponse("Usage: `/cursor cancel <agentID>`\nGet agent IDs from `/cursor list`."), nil
 	}
 
-	if h.deps.CursorClient == nil {
+	if h.deps.CursorClientFn() == nil {
 		return ephemeralResponse(errNoCursorClient), nil
 	}
 
@@ -352,7 +359,7 @@ func (h *Handler) executeCancel(args *model.CommandArgs, params []string) (*mode
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, stopErr := h.deps.CursorClient.StopAgent(ctx, agentID)
+	_, stopErr := h.deps.CursorClientFn().StopAgent(ctx, agentID)
 	if stopErr != nil {
 		return ephemeralResponse(formatAPIError("Failed to cancel agent", stopErr)), nil
 	}
@@ -461,14 +468,14 @@ func (h *Handler) executeSettings(args *model.CommandArgs) (*model.CommandRespon
 }
 
 func (h *Handler) executeModels(args *model.CommandArgs) (*model.CommandResponse, error) {
-	if h.deps.CursorClient == nil {
+	if h.deps.CursorClientFn() == nil {
 		return ephemeralResponse(errNoCursorClient), nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	resp, err := h.deps.CursorClient.ListModels(ctx)
+	resp, err := h.deps.CursorClientFn().ListModels(ctx)
 	if err != nil {
 		return ephemeralResponse(formatAPIError("Failed to fetch models", err)), nil
 	}
@@ -547,21 +554,21 @@ func coalesce(values ...string) string {
 	return ""
 }
 
+// sanitizeBranchName creates a branch-name-safe slug from a prompt.
+// Takes the first ~50 chars, lowercases, replaces non-alphanumeric with hyphens.
+// Falls back to a timestamp-based name if the slug is empty (e.g. all-emoji prompt).
 func sanitizeBranchName(prompt string) string {
 	s := strings.ToLower(prompt)
-	if len(s) > 40 {
-		s = s[:40]
+	if len(s) > 50 {
+		s = s[:50]
 	}
-	s = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			return r
-		}
-		if r == ' ' {
-			return '-'
-		}
-		return -1
-	}, s)
-	return strings.Trim(s, "-")
+	re := regexp.MustCompile(`[^a-z0-9]+`)
+	s = re.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = fmt.Sprintf("agent-%d", time.Now().Unix())
+	}
+	return s
 }
 
 // formatAPIError formats an error from the Cursor API into a user-friendly message.

@@ -680,6 +680,12 @@ func TestSanitizeBranchName(t *testing.T) {
 			assert.Equal(t, tt.expected, sanitizeBranchName(tt.input))
 		})
 	}
+
+	// Non-alpha prompts should produce a fallback name instead of "cursor/".
+	t.Run("all non-alpha falls back to agent timestamp", func(t *testing.T) {
+		result := sanitizeBranchName("!!!")
+		assert.True(t, strings.HasPrefix(result, "cursor/agent-"), "expected fallback prefix, got: %s", result)
+	})
 }
 
 func TestEnrichFromThread_NotAThread(t *testing.T) {

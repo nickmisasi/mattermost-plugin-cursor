@@ -117,6 +117,11 @@ export function cancelAgent(agentId: string) {
 
 // --- WebSocket event handlers ---
 
+const parseTimestamp = (value: string): number => {
+    const parsed = parseInt(value, 10);
+    return Number.isNaN(parsed) ? Date.now() : parsed;
+};
+
 export const websocketAgentStatusChange = (data: AgentStatusChangeEvent): AgentStatusChangedAction => ({
     type: AGENT_STATUS_CHANGED,
     data: {
@@ -124,7 +129,7 @@ export const websocketAgentStatusChange = (data: AgentStatusChangeEvent): AgentS
         status: data.status,
         pr_url: data.pr_url,
         summary: data.summary,
-        updated_at: parseInt(data.updated_at, 10),
+        updated_at: parseTimestamp(data.updated_at),
     },
 });
 
@@ -143,7 +148,7 @@ export const websocketAgentCreated = (data: AgentCreatedEvent): AgentCreatedActi
         root_post_id: '',
         summary: '',
         model: '',
-        created_at: parseInt(data.created_at, 10),
-        updated_at: parseInt(data.created_at, 10),
+        created_at: parseTimestamp(data.created_at),
+        updated_at: parseTimestamp(data.created_at),
     },
 });
