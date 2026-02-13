@@ -650,9 +650,9 @@ func TestDefaultResolution(t *testing.T) {
 	// Channel overrides user, user overrides global.
 	// Parsed overrides everything.
 	assert.Equal(t, "channel/repo", repo)       // channel > user > global
-	assert.Equal(t, "explicit-branch", branch)   // parsed > channel > user > global
-	assert.Equal(t, "claude-sonnet", modelName)   // user > global (channel doesn't set model)
-	assert.True(t, autoCreatePR)                  // global default (no override)
+	assert.Equal(t, "explicit-branch", branch)  // parsed > channel > user > global
+	assert.Equal(t, "claude-sonnet", modelName) // user > global (channel doesn't set model)
+	assert.True(t, autoCreatePR)                // global default (no override)
 }
 
 func TestContainsMention(t *testing.T) {

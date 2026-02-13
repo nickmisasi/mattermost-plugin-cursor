@@ -181,7 +181,7 @@ func (c *clientImpl) doRequest(ctx context.Context, method, path string, body in
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", err)
 			c.logDebug("Cursor API response body read error",

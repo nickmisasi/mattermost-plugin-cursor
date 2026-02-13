@@ -16,15 +16,15 @@ import (
 // configuration, as well as values computed from the configuration. Any public fields will be
 // deserialized from the Mattermost server configuration in OnConfigurationChange.
 type configuration struct {
-	CursorAPIKey             string `json:"CursorAPIKey"`
-	DefaultRepository        string `json:"DefaultRepository"`
-	DefaultBranch            string `json:"DefaultBranch"`
-	DefaultModel             string `json:"DefaultModel"`
-	AutoCreatePR             bool   `json:"AutoCreatePR"`
-	PollIntervalSeconds      int    `json:"PollIntervalSeconds"`
-	GitHubWebhookSecret      string `json:"GitHubWebhookSecret"`
-	CursorAgentSystemPrompt  string `json:"CursorAgentSystemPrompt"`
-	EnableDebugLogging       bool   `json:"EnableDebugLogging"`
+	CursorAPIKey            string `json:"CursorAPIKey"`
+	DefaultRepository       string `json:"DefaultRepository"`
+	DefaultBranch           string `json:"DefaultBranch"`
+	DefaultModel            string `json:"DefaultModel"`
+	AutoCreatePR            bool   `json:"AutoCreatePR"`
+	PollIntervalSeconds     int    `json:"PollIntervalSeconds"`
+	GitHubWebhookSecret     string `json:"GitHubWebhookSecret"`
+	CursorAgentSystemPrompt string `json:"CursorAgentSystemPrompt"`
+	EnableDebugLogging      bool   `json:"EnableDebugLogging"`
 }
 
 // Clone shallow copies the configuration.

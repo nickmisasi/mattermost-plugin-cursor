@@ -74,7 +74,7 @@ func TestSettingsDialog_ValidSubmission(t *testing.T) {
 	p.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusOK, result.StatusCode)
 
 	respBody, _ := io.ReadAll(result.Body)
@@ -106,11 +106,11 @@ func TestSettingsDialog_InvalidRepo(t *testing.T) {
 	p.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusOK, result.StatusCode)
 
 	var resp model.SubmitDialogResponse
-	json.NewDecoder(result.Body).Decode(&resp)
+	_ = json.NewDecoder(result.Body).Decode(&resp)
 	assert.Contains(t, resp.Errors, "channel_default_repo")
 	assert.Contains(t, resp.Errors["channel_default_repo"], "owner/repo format")
 }
@@ -142,7 +142,7 @@ func TestSettingsDialog_EmptySubmission(t *testing.T) {
 	p.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusOK, result.StatusCode)
 	store.AssertExpectations(t)
 }
@@ -164,7 +164,7 @@ func TestSettingsDialog_InvalidState(t *testing.T) {
 	p.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, result.StatusCode)
 }
 
@@ -185,7 +185,7 @@ func TestSettingsDialog_UserMismatch(t *testing.T) {
 	p.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusForbidden, result.StatusCode)
 }
 
@@ -209,9 +209,9 @@ func TestSettingsDialog_InvalidUserRepo(t *testing.T) {
 	p.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	var resp model.SubmitDialogResponse
-	json.NewDecoder(result.Body).Decode(&resp)
+	_ = json.NewDecoder(result.Body).Decode(&resp)
 	assert.Contains(t, resp.Errors, "user_default_repo")
 }

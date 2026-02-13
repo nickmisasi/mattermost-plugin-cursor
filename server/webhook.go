@@ -133,7 +133,7 @@ func (p *Plugin) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// 2. Verify HMAC signature.
 	secret := config.GitHubWebhookSecret

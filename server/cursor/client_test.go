@@ -30,7 +30,7 @@ func TestLaunchAgent(t *testing.T) {
 		assert.Equal(t, "https://github.com/org/repo", req.Source.Repository)
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer server.Close()
 
@@ -56,7 +56,7 @@ func TestGetAgent(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/v0/agents/agent-123", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer server.Close()
 
@@ -77,7 +77,7 @@ func TestListAgents(t *testing.T) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "20", r.URL.Query().Get("limit"))
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer server.Close()
 
@@ -94,7 +94,7 @@ func TestListAgentsWithCursor(t *testing.T) {
 		assert.Equal(t, "page2", r.URL.Query().Get("cursor"))
 		assert.Equal(t, "10", r.URL.Query().Get("limit"))
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(ListAgentsResponse{Agents: []Agent{{ID: "a3"}}})
+		_ = json.NewEncoder(w).Encode(ListAgentsResponse{Agents: []Agent{{ID: "a3"}}})
 	}))
 	defer server.Close()
 
@@ -116,7 +116,7 @@ func TestAddFollowup(t *testing.T) {
 		assert.Equal(t, "Also fix the tests", req.Prompt.Text)
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(FollowupResponse{ID: "agent-123"})
+		_ = json.NewEncoder(w).Encode(FollowupResponse{ID: "agent-123"})
 	}))
 	defer server.Close()
 
@@ -140,7 +140,7 @@ func TestGetConversation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v0/agents/agent-123/conversation", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer server.Close()
 
@@ -157,7 +157,7 @@ func TestStopAgent(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "/v0/agents/agent-123/stop", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(StopResponse{ID: "agent-123"})
+		_ = json.NewEncoder(w).Encode(StopResponse{ID: "agent-123"})
 	}))
 	defer server.Close()
 
@@ -173,7 +173,7 @@ func TestDeleteAgent(t *testing.T) {
 		assert.Equal(t, http.MethodDelete, r.Method)
 		assert.Equal(t, "/v0/agents/agent-123", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(DeleteResponse{ID: "agent-123"})
+		_ = json.NewEncoder(w).Encode(DeleteResponse{ID: "agent-123"})
 	}))
 	defer server.Close()
 
@@ -189,7 +189,7 @@ func TestListModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v0/models", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer server.Close()
 
@@ -208,7 +208,7 @@ func TestGetMe(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v0/me", r.URL.Path)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(expected)
+		_ = json.NewEncoder(w).Encode(expected)
 	}))
 	defer server.Close()
 
@@ -222,7 +222,7 @@ func TestGetMe(t *testing.T) {
 func TestAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Invalid API key"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Invalid API key"})
 	}))
 	defer server.Close()
 
@@ -239,7 +239,7 @@ func TestAPIError(t *testing.T) {
 func TestAPIErrorNotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Agent not found"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Agent not found"})
 	}))
 	defer server.Close()
 
@@ -256,7 +256,7 @@ func TestAPIErrorNotFound(t *testing.T) {
 func TestAPIErrorForbidden(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Forbidden"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Forbidden"})
 	}))
 	defer server.Close()
 
@@ -274,7 +274,7 @@ func TestNoRetryOn400(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Bad request"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Bad request"})
 	}))
 	defer server.Close()
 
@@ -291,11 +291,11 @@ func TestRetryOn429(t *testing.T) {
 		count := atomic.AddInt32(&attempts, 1)
 		if count < 3 {
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`{"message":"rate limited"}`))
+			_, _ = w.Write([]byte(`{"message":"rate limited"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(ListModelsResponse{Models: []string{"auto"}})
+		_ = json.NewEncoder(w).Encode(ListModelsResponse{Models: []string{"auto"}})
 	}))
 	defer server.Close()
 
@@ -313,11 +313,11 @@ func TestRetryOn500(t *testing.T) {
 		count := atomic.AddInt32(&attempts, 1)
 		if count < 2 {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"message":"internal error"}`))
+			_, _ = w.Write([]byte(`{"message":"internal error"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(APIKeyInfo{UserEmail: "test@example.com"})
+		_ = json.NewEncoder(w).Encode(APIKeyInfo{UserEmail: "test@example.com"})
 	}))
 	defer server.Close()
 
@@ -334,7 +334,7 @@ func TestRetryExhausted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.WriteHeader(http.StatusTooManyRequests)
-		w.Write([]byte(`{"message":"rate limited"}`))
+		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
 	}))
 	defer server.Close()
 
@@ -379,7 +379,7 @@ func TestBasicAuthHeader(t *testing.T) {
 		assert.Equal(t, "", password)
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(APIKeyInfo{UserEmail: "test@example.com"})
+		_ = json.NewEncoder(w).Encode(APIKeyInfo{UserEmail: "test@example.com"})
 	}))
 	defer server.Close()
 
@@ -396,7 +396,7 @@ func TestAPIErrorMessage(t *testing.T) {
 func TestNonJSONErrorResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("plain text error"))
+		_, _ = w.Write([]byte("plain text error"))
 	}))
 	defer server.Close()
 
