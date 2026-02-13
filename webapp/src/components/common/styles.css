@@ -1,0 +1,197 @@
+/* ==========================================
+   Cursor Plugin Styles
+   All colors use Mattermost CSS variables.
+   ========================================== */
+
+/* --- Status Badge --- */
+
+.cursor-status-badge {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.cursor-status-creating {
+    background-color: var(--away-indicator);
+}
+
+.cursor-status-running {
+    background-color: var(--online-indicator);
+}
+
+.cursor-status-finished {
+    background-color: rgba(var(--center-channel-color-rgb), 0.4);
+}
+
+.cursor-status-failed {
+    background-color: var(--dnd-indicator);
+}
+
+.cursor-status-stopped {
+    background-color: rgba(var(--center-channel-color-rgb), 0.3);
+}
+
+/* --- RHS Panel --- */
+
+.cursor-rhs-empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+}
+
+.cursor-rhs-empty-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: rgba(var(--center-channel-color-rgb), 0.4);
+}
+
+/* --- Agent List --- */
+
+.cursor-agent-list {
+    overflow-y: auto;
+    max-height: 100%;
+}
+
+/* --- Agent Card --- */
+
+.cursor-agent-card {
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.cursor-agent-card:hover {
+    background-color: rgba(var(--center-channel-color-rgb), 0.04);
+}
+
+.cursor-agent-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.cursor-agent-card-repo {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--center-channel-color);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cursor-agent-card-time {
+    font-size: 11px;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    flex-shrink: 0;
+}
+
+.cursor-agent-card-prompt {
+    font-size: 12px;
+    color: rgba(var(--center-channel-color-rgb), 0.72);
+    line-height: 1.4;
+    margin-top: 4px;
+}
+
+.cursor-agent-card-pr {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--link-color);
+    text-decoration: none;
+}
+
+.cursor-agent-card-pr:hover {
+    text-decoration: underline;
+}
+
+/* --- Agent Detail --- */
+
+.cursor-agent-detail {
+    padding: 16px;
+}
+
+.cursor-agent-detail-back {
+    margin-bottom: 12px;
+}
+
+.cursor-agent-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.cursor-agent-detail-status-text {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--center-channel-color);
+}
+
+.cursor-agent-detail-section {
+    margin-bottom: 12px;
+}
+
+.cursor-agent-detail-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    margin-bottom: 4px;
+}
+
+.cursor-agent-detail-value {
+    font-size: 13px;
+    color: var(--center-channel-color);
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.cursor-agent-detail-links {
+    display: flex;
+    gap: 8px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+}
+
+.cursor-agent-detail-followup {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.cursor-agent-detail-cancel {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+/* --- Textarea --- */
+
+.cursor-textarea {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.2);
+    border-radius: 4px;
+    background-color: var(--center-channel-bg);
+    color: var(--center-channel-color);
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    margin-bottom: 8px;
+    box-sizing: border-box;
+}
+
+.cursor-textarea:focus {
+    outline: none;
+    border-color: var(--button-bg);
+}
+
+.cursor-textarea::placeholder {
+    color: rgba(var(--center-channel-color-rgb), 0.4);
+}

@@ -14,5 +14,7 @@ server/manifest.go
 
 
 .planning/
+.qa/
 
 .env
+
