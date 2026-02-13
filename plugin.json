@@ -1,11 +1,11 @@
 {
-    "id": "com.mattermost.plugin-starter-template",
-    "name": "Plugin Starter Template",
-    "description": "This plugin serves as a starting point for writing a Mattermost plugin.",
-    "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
-    "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
-    "icon_path": "assets/starter-template-icon.svg",
-    "min_server_version": "6.2.1",
+    "id": "com.mattermost.plugin-cursor",
+    "name": "Cursor Background Agents",
+    "description": "Launch, manage, and interact with Cursor Background Agents directly from Mattermost.",
+    "homepage_url": "https://github.com/mattermost/mattermost-plugin-cursor",
+    "support_url": "https://github.com/mattermost/mattermost-plugin-cursor/issues",
+    "icon_path": "assets/cursor-icon.png",
+    "min_server_version": "9.6.0",
     "server": {
         "executables": {
             "linux-amd64": "server/dist/plugin-linux-amd64",
@@ -19,8 +19,77 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "",
-        "footer": "",
-        "settings": []
+        "header": "Configure the Cursor Background Agents plugin. You need a Cursor API key from [cursor.com/dashboard](https://cursor.com/dashboard) under Integrations.",
+        "footer": "For troubleshooting, check the health endpoint at /plugins/com.mattermost.plugin-cursor/api/v1/admin/health. [Report issues](https://github.com/mattermost/mattermost-plugin-cursor/issues).",
+        "settings": [
+            {
+                "key": "CursorAPIKey",
+                "display_name": "Cursor API Key",
+                "type": "text",
+                "help_text": "API key from your Cursor dashboard (Dashboard -> Integrations). Required for the plugin to function.",
+                "placeholder": "cur_...",
+                "secret": true
+            },
+            {
+                "key": "DefaultRepository",
+                "display_name": "Default Repository",
+                "type": "text",
+                "help_text": "Default GitHub repository in owner/repo format. Users can override per-channel or per-message.",
+                "placeholder": "mattermost/mattermost"
+            },
+            {
+                "key": "DefaultBranch",
+                "display_name": "Default Branch",
+                "type": "text",
+                "help_text": "Default base branch for new agents. Users can override per-message with branch=name.",
+                "default": "main",
+                "placeholder": "main"
+            },
+            {
+                "key": "DefaultModel",
+                "display_name": "Default AI Model",
+                "type": "text",
+                "help_text": "Default model for background agents (e.g., auto, claude-sonnet, gpt-4o). Users can override with 'with model' or model=name.",
+                "default": "auto",
+                "placeholder": "auto"
+            },
+            {
+                "key": "AutoCreatePR",
+                "display_name": "Auto-Create Pull Requests",
+                "type": "bool",
+                "help_text": "When enabled, agents automatically create pull requests on completion. Users can override per-message with autopr=false.",
+                "default": "true"
+            },
+            {
+                "key": "PollIntervalSeconds",
+                "display_name": "Status Poll Interval (seconds)",
+                "type": "number",
+                "help_text": "How often the plugin checks for agent status changes. Minimum 10 seconds. Lower values increase API usage.",
+                "default": "30",
+                "placeholder": "30"
+            },
+            {
+                "key": "GitHubWebhookSecret",
+                "display_name": "GitHub Webhook Secret",
+                "type": "text",
+                "help_text": "Secret for verifying GitHub webhook signatures (used for PR lifecycle notifications). Leave blank to disable webhook verification.",
+                "placeholder": "your-webhook-secret",
+                "secret": true
+            },
+            {
+                "key": "CursorAgentSystemPrompt",
+                "display_name": "Cursor Agent System Prompt",
+                "type": "longtext",
+                "help_text": "Instructions prepended to every Cursor agent prompt. Tells the agent how to approach development. Leave blank to use the built-in default.",
+                "default": ""
+            },
+            {
+                "key": "EnableDebugLogging",
+                "display_name": "Enable Debug Logging",
+                "type": "bool",
+                "help_text": "When enabled, the plugin logs detailed debug information including API request/response bodies. Disable in production to reduce log noise.",
+                "default": "false"
+            }
+        ]
     }
 }

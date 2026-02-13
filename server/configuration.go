@@ -1,29 +1,65 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"reflect"
+	"strings"
+	"time"
 
 	"github.com/pkg/errors"
+
+	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 )
 
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
 // configuration, as well as values computed from the configuration. Any public fields will be
 // deserialized from the Mattermost server configuration in OnConfigurationChange.
-//
-// As plugins are inherently concurrent (hooks being called asynchronously), and the plugin
-// configuration can change at any time, access to the configuration must be synchronized. The
-// strategy used in this plugin is to guard a pointer to the configuration, and clone the entire
-// struct whenever it changes. You may replace this with whatever strategy you choose.
-//
-// If you add non-reference types to your configuration struct, be sure to rewrite Clone as a deep
-// copy appropriate for your types.
-type configuration struct{}
+type configuration struct {
+	CursorAPIKey            string `json:"CursorAPIKey"`
+	DefaultRepository       string `json:"DefaultRepository"`
+	DefaultBranch           string `json:"DefaultBranch"`
+	DefaultModel            string `json:"DefaultModel"`
+	AutoCreatePR            bool   `json:"AutoCreatePR"`
+	PollIntervalSeconds     int    `json:"PollIntervalSeconds"`
+	GitHubWebhookSecret     string `json:"GitHubWebhookSecret"`
+	CursorAgentSystemPrompt string `json:"CursorAgentSystemPrompt"`
+	EnableDebugLogging      bool   `json:"EnableDebugLogging"`
+}
 
-// Clone shallow copies the configuration. Your implementation may require a deep copy if
-// your configuration has reference types.
+// Clone shallow copies the configuration.
 func (c *configuration) Clone() *configuration {
 	clone := *c
 	return &clone
+}
+
+// IsValid checks that required configuration is present and well-formed.
+func (c *configuration) IsValid() error {
+	if c.CursorAPIKey == "" {
+		return fmt.Errorf("cursor API Key is required. Get one from cursor.com/dashboard -> Integrations")
+	}
+
+	if c.PollIntervalSeconds < 10 {
+		return fmt.Errorf("poll interval must be at least 10 seconds, got %d", c.PollIntervalSeconds)
+	}
+
+	// Validate DefaultRepository format if set.
+	if c.DefaultRepository != "" {
+		parts := strings.Split(c.DefaultRepository, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("default Repository must be in 'owner/repo' format, got %q", c.DefaultRepository)
+		}
+	}
+
+	return nil
+}
+
+// GetPollInterval returns the poll interval, defaulting to 30 if unset or below minimum.
+func (c *configuration) GetPollInterval() int {
+	if c.PollIntervalSeconds < 10 {
+		return 30
+	}
+	return c.PollIntervalSeconds
 }
 
 // getConfiguration retrieves the active configuration under lock, making it safe to use
@@ -41,22 +77,11 @@ func (p *Plugin) getConfiguration() *configuration {
 }
 
 // setConfiguration replaces the active configuration under lock.
-//
-// Do not call setConfiguration while holding the configurationLock, as sync.Mutex is not
-// reentrant. In particular, avoid using the plugin API entirely, as this may in turn trigger a
-// hook back into the plugin. If that hook attempts to acquire this lock, a deadlock may occur.
-//
-// This method panics if setConfiguration is called with the existing configuration. This almost
-// certainly means that the configuration was modified without being cloned and may result in
-// an unsafe access.
 func (p *Plugin) setConfiguration(configuration *configuration) {
 	p.configurationLock.Lock()
 	defer p.configurationLock.Unlock()
 
 	if configuration != nil && p.configuration == configuration {
-		// Ignore assignment if the configuration struct is empty. Go will optimize the
-		// allocation for same to point at the same memory address, breaking the check
-		// above.
 		if reflect.ValueOf(*configuration).NumField() == 0 {
 			return
 		}
@@ -69,14 +94,66 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 
 // OnConfigurationChange is invoked when configuration changes may have been made.
 func (p *Plugin) OnConfigurationChange() error {
-	configuration := new(configuration)
+	cfg := new(configuration)
 
-	// Load the public configuration fields from the Mattermost server configuration.
-	if err := p.API.LoadPluginConfiguration(configuration); err != nil {
+	if err := p.API.LoadPluginConfiguration(cfg); err != nil {
 		return errors.Wrap(err, "failed to load plugin configuration")
 	}
 
-	p.setConfiguration(configuration)
+	// Apply defaults for fields that have default values in plugin.json
+	// but may not be set yet (e.g., fresh install).
+	if cfg.DefaultBranch == "" {
+		cfg.DefaultBranch = "main"
+	}
+	if cfg.DefaultModel == "" {
+		cfg.DefaultModel = "auto"
+	}
+	if cfg.PollIntervalSeconds == 0 {
+		cfg.PollIntervalSeconds = 30
+	}
+
+	// Validate the configuration.
+	if err := cfg.IsValid(); err != nil {
+		p.API.LogWarn("Invalid plugin configuration", "error", err.Error())
+		// Do NOT return an error here. Returning an error from OnConfigurationChange
+		// would prevent the plugin from activating at all. Instead, log the warning
+		// and let the plugin run in a degraded state. The health endpoint will
+		// report the specific issue.
+	}
+
+	// Validate the Cursor API key by making a lightweight API call.
+	// Only do this if the API key is non-empty and has changed.
+	oldConfig := p.getConfiguration()
+	if cfg.CursorAPIKey != "" && (oldConfig == nil || cfg.CursorAPIKey != oldConfig.CursorAPIKey) {
+		go p.validateAPIKey(cfg.CursorAPIKey)
+	}
+
+	p.setConfiguration(cfg)
+
+	// Re-initialize the Cursor client with the new API key if the plugin is activated.
+	if cfg.CursorAPIKey != "" && p.client != nil {
+		p.setCursorClient(cursor.NewClient(cfg.CursorAPIKey, cursor.WithLogger(&pluginLogger{plugin: p})))
+	} else {
+		p.setCursorClient(nil)
+	}
 
 	return nil
+}
+
+// validateAPIKey checks if the Cursor API key is valid by calling GET /v0/me.
+// This is done in a goroutine to avoid blocking OnConfigurationChange.
+func (p *Plugin) validateAPIKey(apiKey string) {
+	client := cursor.NewClient(apiKey, cursor.WithLogger(&pluginLogger{plugin: p}))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := client.GetMe(ctx)
+	if err != nil {
+		p.API.LogWarn("Cursor API key validation failed",
+			"error", err.Error(),
+			"hint", "Check that your API key is correct at cursor.com/dashboard -> Integrations",
+		)
+		return
+	}
+	p.API.LogInfo("Cursor API key validated successfully")
 }
