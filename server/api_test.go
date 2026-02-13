@@ -48,7 +48,7 @@ func setupAPITestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClie
 	return p, api, cursorClient, store
 }
 
-func doRequest(p *Plugin, method, path string, body interface{}, userID string) *httptest.ResponseRecorder {
+func doRequest(p *Plugin, method, path string, body any, userID string) *httptest.ResponseRecorder {
 	var reqBody *bytes.Buffer
 	if body != nil {
 		data, _ := json.Marshal(body)

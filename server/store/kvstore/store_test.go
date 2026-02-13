@@ -23,7 +23,7 @@ func setupStore(t *testing.T) (*store, *plugintest.API) {
 	return s, api
 }
 
-func mustJSON(t *testing.T, v interface{}) []byte {
+func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
 	require.NoError(t, err)

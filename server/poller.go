@@ -220,7 +220,7 @@ func (p *Plugin) updateBotPostProps(record *kvstore.AgentRecord) {
 func (p *Plugin) publishAgentStatusChange(record *kvstore.AgentRecord) {
 	p.API.PublishWebSocketEvent(
 		"agent_status_change",
-		map[string]interface{}{
+		map[string]any{
 			"agent_id":   record.CursorAgentID,
 			"status":     record.Status,
 			"pr_url":     record.PrURL,
@@ -236,7 +236,7 @@ func (p *Plugin) publishAgentStatusChange(record *kvstore.AgentRecord) {
 func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 	p.API.PublishWebSocketEvent(
 		"agent_created",
-		map[string]interface{}{
+		map[string]any{
 			"agent_id":   record.CursorAgentID,
 			"status":     record.Status,
 			"repository": record.Repository,

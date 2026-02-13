@@ -21,7 +21,7 @@ const (
 // Logger is an interface for debug logging within the Cursor API client.
 // When non-nil, the client logs detailed request/response information.
 type Logger interface {
-	LogDebug(msg string, keyValuePairs ...interface{})
+	LogDebug(msg string, keyValuePairs ...any)
 }
 
 // Client is the interface for interacting with the Cursor Background Agents API.
@@ -103,7 +103,7 @@ func WithLogger(logger Logger) ClientOption {
 }
 
 // logDebug logs a debug message if a logger is configured.
-func (c *clientImpl) logDebug(msg string, keyValuePairs ...interface{}) {
+func (c *clientImpl) logDebug(msg string, keyValuePairs ...any) {
 	if c.logger != nil {
 		c.logger.LogDebug(msg, keyValuePairs...)
 	}
@@ -111,7 +111,7 @@ func (c *clientImpl) logDebug(msg string, keyValuePairs ...interface{}) {
 
 // doRequest performs an HTTP request with retry logic for transient failures.
 // It retries on 429 (rate limit) and 5xx errors up to maxRetries times.
-func (c *clientImpl) doRequest(ctx context.Context, method, path string, body interface{}) ([]byte, error) {
+func (c *clientImpl) doRequest(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var bodyBytes []byte
 	if body != nil {
 		var err error

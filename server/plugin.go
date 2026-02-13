@@ -59,7 +59,7 @@ type Plugin struct {
 }
 
 // logDebug logs a debug message only when EnableDebugLogging is true.
-func (p *Plugin) logDebug(msg string, keyValuePairs ...interface{}) {
+func (p *Plugin) logDebug(msg string, keyValuePairs ...any) {
 	if p.getConfiguration().EnableDebugLogging {
 		p.API.LogDebug(msg, keyValuePairs...)
 	}
@@ -70,7 +70,7 @@ type pluginLogger struct {
 	plugin *Plugin
 }
 
-func (l *pluginLogger) LogDebug(msg string, keyValuePairs ...interface{}) {
+func (l *pluginLogger) LogDebug(msg string, keyValuePairs ...any) {
 	l.plugin.logDebug(msg, keyValuePairs...)
 }
 
