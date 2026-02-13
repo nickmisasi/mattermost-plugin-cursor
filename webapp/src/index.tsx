@@ -16,7 +16,7 @@ export default class Plugin {
 
     public async initialize(registry: PluginRegistry, store: Store<GlobalState>) {
         // 1. Register Redux reducer
-        registry.registerReducer(reducer);
+        registry.registerReducer(reducer as any); // eslint-disable-line @typescript-eslint/no-explicit-any
 
         // 2. Register RHS component
         const {toggleRHSPlugin, showRHSPlugin} = registry.registerRightHandSidebarComponent(
@@ -108,7 +108,7 @@ export default class Plugin {
                 const post = state.entities?.posts?.posts?.[postId];
                 const agentId = post?.props?.cursor_agent_id;
                 if (agentId) {
-                    store.dispatch(selectAgent(agentId));
+                    store.dispatch(selectAgent(agentId) as any);
                     if (this.rhsShowAction) {
                         store.dispatch(this.rhsShowAction as any);
                     }

@@ -527,12 +527,12 @@ export interface PluginRegistry {
     registerPostDropdownMenuAction(
         ...args: [
             text: React.ReactNode,
-            action: () => void,
-            filter: (post: Post) => boolean
+            action: (postId: string) => void,
+            filter: (postId: string) => boolean
         ] | [{
             text: React.ReactNode;
-            action: () => void;
-            filter: (post: Post) => boolean;
+            action: (postId: string) => void;
+            filter: (postId: string) => boolean;
         }]
     ): UniqueIdentifier;
 

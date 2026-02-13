@@ -23,7 +23,7 @@ const RHSPanel: React.FC = () => {
         return (
             <AgentDetail
                 agent={selectedAgent}
-                onBack={() => dispatch(selectAgent(null))}
+                onBack={() => dispatch(selectAgent(null) as any)}
             />
         );
     }
@@ -32,7 +32,7 @@ const RHSPanel: React.FC = () => {
         <AgentList
             agents={agents}
             isLoading={isLoading}
-            onSelectAgent={(id) => dispatch(selectAgent(id))}
+            onSelectAgent={(id) => dispatch(selectAgent(id) as any)}
         />
     );
 };
