@@ -223,7 +223,7 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +278,7 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (p *Plugin) handleAddFollowup(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +341,7 @@ func (p *Plugin) handleAddFollowup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
+	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
 }
 
 func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
@@ -392,7 +392,7 @@ func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 			UserId:    p.getBotUserID(),
 			ChannelId: record.ChannelID,
 			RootId:    record.PostID,
-			Message:   fmt.Sprintf(":no_entry_sign: Agent was cancelled via the dashboard."),
+			Message:   ":no_entry_sign: Agent was cancelled via the dashboard.",
 		})
 	}
 
@@ -400,5 +400,5 @@ func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 	p.publishAgentStatusChange(record)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
+	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
 }

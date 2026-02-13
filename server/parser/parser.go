@@ -116,15 +116,14 @@ func Parse(message string, botMention string) *ParsedMention {
 
 // parseBracketedOptions parses comma-separated key=value pairs inside brackets.
 func parseBracketedOptions(content string, result *ParsedMention) {
-	pairs := strings.Split(content, ",")
-	for _, pair := range pairs {
+	for pair := range strings.SplitSeq(content, ",") {
 		pair = strings.TrimSpace(pair)
-		eqIdx := strings.Index(pair, "=")
-		if eqIdx < 0 {
+		key, value, found := strings.Cut(pair, "=")
+		if !found {
 			continue
 		}
-		key := strings.TrimSpace(strings.ToLower(pair[:eqIdx]))
-		value := strings.TrimSpace(pair[eqIdx+1:])
+		key = strings.TrimSpace(strings.ToLower(key))
+		value = strings.TrimSpace(value)
 		applyOption(key, value, result)
 	}
 }

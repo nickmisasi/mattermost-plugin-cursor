@@ -31,7 +31,7 @@ func TestServeHTTPUnauthorized(t *testing.T) {
 	plugin.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, result.StatusCode)
 }
 
@@ -45,7 +45,7 @@ func TestServeHTTPHealthRoute_NonAdmin(t *testing.T) {
 	plugin.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 
 	// Without p.client initialized, isSystemAdmin will fail and return Forbidden
 	assert.Equal(t, http.StatusForbidden, result.StatusCode)
@@ -61,7 +61,7 @@ func TestServeHTTPNotFound(t *testing.T) {
 	plugin.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, result.StatusCode)
 }
 
@@ -76,7 +76,7 @@ func TestConfigurationIsValid(t *testing.T) {
 		{
 			name:    "missing API key",
 			cfg:     configuration{PollIntervalSeconds: 30},
-			wantErr: "Cursor API Key is required",
+			wantErr: "cursor API Key is required",
 		},
 		{
 			name: "valid config",
@@ -101,7 +101,7 @@ func TestConfigurationIsValid(t *testing.T) {
 				CursorAPIKey:        "cur_test123",
 				PollIntervalSeconds: 5,
 			},
-			wantErr: "Poll interval must be at least 10 seconds",
+			wantErr: "poll interval must be at least 10 seconds",
 		},
 		{
 			name: "poll interval at minimum",
@@ -227,7 +227,7 @@ func TestHealthCheck_Unauthenticated(t *testing.T) {
 	plugin.ServeHTTP(nil, w, r)
 
 	result := w.Result()
-	defer result.Body.Close()
+	defer func() { _ = result.Body.Close() }()
 	bodyBytes, _ := io.ReadAll(result.Body)
 	assert.Equal(t, http.StatusUnauthorized, result.StatusCode)
 	assert.Contains(t, string(bodyBytes), "Not authorized")
@@ -317,7 +317,7 @@ func TestHealthCheck_NoAPIKey(t *testing.T) {
 	assert.False(t, resp.CursorAPI.OK)
 	assert.Contains(t, resp.CursorAPI.Message, "Cursor API key not configured")
 	assert.False(t, resp.Configuration.OK)
-	assert.Contains(t, resp.Configuration.Message, "Cursor API Key is required")
+	assert.Contains(t, resp.Configuration.Message, "cursor API Key is required")
 }
 
 func TestHealthCheck_BadAPIKey(t *testing.T) {

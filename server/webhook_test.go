@@ -19,6 +19,7 @@ import (
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
+//nolint:gosec // test constant, not a real credential
 const testWebhookSecret = "test-webhook-secret"
 
 // signPayload generates a valid HMAC-SHA256 signature for test payloads.

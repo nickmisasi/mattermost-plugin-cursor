@@ -52,7 +52,7 @@ func (p *Plugin) handleSettingsDialogSubmission(w http.ResponseWriter, r *http.R
 	if len(dialogErrors) > 0 {
 		w.Header().Set("Content-Type", "application/json")
 		resp := model.SubmitDialogResponse{Errors: dialogErrors}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 		return
 	}
 

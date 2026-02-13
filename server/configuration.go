@@ -36,18 +36,18 @@ func (c *configuration) Clone() *configuration {
 // IsValid checks that required configuration is present and well-formed.
 func (c *configuration) IsValid() error {
 	if c.CursorAPIKey == "" {
-		return fmt.Errorf("Cursor API Key is required. Get one from cursor.com/dashboard -> Integrations")
+		return fmt.Errorf("cursor API Key is required. Get one from cursor.com/dashboard -> Integrations")
 	}
 
 	if c.PollIntervalSeconds < 10 {
-		return fmt.Errorf("Poll interval must be at least 10 seconds, got %d", c.PollIntervalSeconds)
+		return fmt.Errorf("poll interval must be at least 10 seconds, got %d", c.PollIntervalSeconds)
 	}
 
 	// Validate DefaultRepository format if set.
 	if c.DefaultRepository != "" {
 		parts := strings.Split(c.DefaultRepository, "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("Default Repository must be in 'owner/repo' format, got %q", c.DefaultRepository)
+			return fmt.Errorf("default Repository must be in 'owner/repo' format, got %q", c.DefaultRepository)
 		}
 	}
 
