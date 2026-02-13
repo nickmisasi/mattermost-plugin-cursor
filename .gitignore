@@ -11,3 +11,8 @@ server/manifest.go
 
 # VS Code
 .vscode
+
+
+.planning/
+
+.env
