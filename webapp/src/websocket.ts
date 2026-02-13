@@ -2,10 +2,11 @@ import type {Store} from 'redux';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import manifest from './manifest';
-import {websocketAgentStatusChange, websocketAgentCreated} from './actions';
-import type {AgentStatusChangeEvent, AgentCreatedEvent} from './types';
 import type {PluginRegistry} from 'types/mattermost-webapp';
+
+import {websocketAgentStatusChange, websocketAgentCreated} from './actions';
+import manifest from './manifest';
+import type {AgentStatusChangeEvent, AgentCreatedEvent} from './types';
 
 export function registerWebSocketHandlers(
     registry: PluginRegistry,

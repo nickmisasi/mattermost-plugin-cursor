@@ -1,7 +1,8 @@
 import React from 'react';
 
-import type {Agent} from '../../types';
 import AgentCard from './AgentCard';
+
+import type {Agent} from '../../types';
 
 interface Props {
     agents: Agent[];

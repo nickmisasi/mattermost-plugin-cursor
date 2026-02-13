@@ -1,6 +1,7 @@
 import React from 'react';
 
 import type {Agent} from '../../types';
+import ExternalLink from '../common/ExternalLink';
 import StatusBadge from '../common/StatusBadge';
 
 interface Props {
@@ -28,9 +29,9 @@ function getElapsedTime(createdAt: number): string {
 const AgentCard: React.FC<Props> = ({agent, onClick}) => {
     const elapsed = getElapsedTime(agent.created_at);
     const repoShort = agent.repository.split('/').slice(-2).join('/');
-    const promptPreview = agent.prompt && agent.prompt.length > 80
-        ? agent.prompt.substring(0, 80) + '...'
-        : (agent.prompt || '');
+    const promptPreview = agent.prompt && agent.prompt.length > 80 ?
+        agent.prompt.substring(0, 80) + '...' :
+        (agent.prompt || '');
 
     return (
         <div
@@ -53,15 +54,13 @@ const AgentCard: React.FC<Props> = ({agent, onClick}) => {
                 <div className='cursor-agent-card-prompt'>{promptPreview}</div>
             )}
             {agent.pr_url && (
-                <a
+                <ExternalLink
                     className='cursor-agent-card-pr'
                     href={agent.pr_url}
-                    target='_blank'
-                    rel='noopener noreferrer'
                     onClick={(e) => e.stopPropagation()}
                 >
                     {'View PR'}
-                </a>
+                </ExternalLink>
             )}
         </div>
     );

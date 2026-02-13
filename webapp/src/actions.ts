@@ -96,7 +96,7 @@ export function fetchAgent(agentId: string) {
 }
 
 export function addFollowup(agentId: string, message: string) {
-    return async (_dispatch: (action: PluginAction) => void) => {
+    return async () => {
         try {
             await Client.addFollowup(agentId, message);
         } catch (error) {
@@ -106,7 +106,7 @@ export function addFollowup(agentId: string, message: string) {
 }
 
 export function cancelAgent(agentId: string) {
-    return async (_dispatch: (action: PluginAction) => void) => {
+    return async () => {
         try {
             await Client.cancelAgent(agentId);
         } catch (error) {

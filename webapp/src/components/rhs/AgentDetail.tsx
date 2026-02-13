@@ -1,9 +1,10 @@
 import React, {useState} from 'react';
 import {useDispatch} from 'react-redux';
 
-import type {Agent} from '../../types';
-import StatusBadge from '../common/StatusBadge';
 import {addFollowup, cancelAgent} from '../../actions';
+import type {Agent} from '../../types';
+import ExternalLink from '../common/ExternalLink';
+import StatusBadge from '../common/StatusBadge';
 
 interface Props {
     agent: Agent;
@@ -72,24 +73,20 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
             <div className='cursor-agent-detail-links'>
                 {agent.cursor_url && (
-                    <a
+                    <ExternalLink
                         href={agent.cursor_url}
-                        target='_blank'
-                        rel='noopener noreferrer'
                         className='btn btn-tertiary'
                     >
                         {'Open in Cursor'}
-                    </a>
+                    </ExternalLink>
                 )}
                 {agent.pr_url && (
-                    <a
+                    <ExternalLink
                         href={agent.pr_url}
-                        target='_blank'
-                        rel='noopener noreferrer'
                         className='btn btn-primary'
                     >
                         {'View Pull Request'}
-                    </a>
+                    </ExternalLink>
                 )}
             </div>
 

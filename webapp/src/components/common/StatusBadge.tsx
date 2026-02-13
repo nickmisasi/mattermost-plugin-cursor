@@ -16,7 +16,12 @@ const STATUS_CLASS_MAP: Record<AgentStatus, string> = {
 
 const StatusBadge: React.FC<Props> = ({status}) => {
     const className = STATUS_CLASS_MAP[status] || 'cursor-status-finished';
-    return <span className={`cursor-status-badge ${className}`} title={status}/>;
+    return (
+        <span
+            className={`cursor-status-badge ${className}`}
+            title={status}
+        />
+    );
 };
 
 export default StatusBadge;

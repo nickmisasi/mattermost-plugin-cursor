@@ -55,7 +55,7 @@ export default function reducer(state: PluginState = initialState, action: Plugi
             agents: {...state.agents, [action.data.id]: action.data},
         };
     case AGENT_REMOVED: {
-        const {[action.data.agent_id]: _, ...remaining} = state.agents; // eslint-disable-line @typescript-eslint/no-unused-vars
+        const {[action.data.agent_id]: removed, ...remaining} = state.agents; // eslint-disable-line @typescript-eslint/no-unused-vars
         return {
             ...state,
             agents: remaining,

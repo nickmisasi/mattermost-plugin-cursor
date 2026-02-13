@@ -1,10 +1,11 @@
 import React, {useEffect} from 'react';
 import {useSelector, useDispatch} from 'react-redux';
 
-import {getSelectedAgent, getAgentsList, getIsLoading} from '../../selectors';
-import {fetchAgents, selectAgent} from '../../actions';
-import AgentList from './AgentList';
 import AgentDetail from './AgentDetail';
+import AgentList from './AgentList';
+
+import {fetchAgents, selectAgent} from '../../actions';
+import {getSelectedAgent, getAgentsList, getIsLoading} from '../../selectors';
 
 import '../common/styles.css';
 

@@ -1,13 +1,14 @@
 import type {Store} from 'redux';
 
 import type {GlobalState} from '@mattermost/types/store';
+
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
+import {fetchAgents, selectAgent, addFollowup, cancelAgent} from './actions';
+import RHSPanel from './components/rhs/RHSPanel';
 import manifest from './manifest';
 import reducer from './reducer';
-import {fetchAgents, selectAgent, addFollowup, cancelAgent} from './actions';
 import {registerWebSocketHandlers} from './websocket';
-import RHSPanel from './components/rhs/RHSPanel';
 
 export default class Plugin {
     private rhsToggleAction: object | null = null;

@@ -1,4 +1,3 @@
-import reducer from './reducer';
 import {
     AGENTS_RECEIVED,
     AGENT_RECEIVED,
@@ -8,7 +7,7 @@ import {
     SELECT_AGENT,
     SET_LOADING,
 } from './actions';
-import type {PluginAction} from './actions';
+import reducer from './reducer';
 import type {Agent, PluginState} from './types';
 
 const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
@@ -48,8 +47,8 @@ describe('reducer', () => {
             data: agents,
         });
         expect(Object.keys(state.agents)).toHaveLength(2);
-        expect(state.agents['a1'].id).toBe('a1');
-        expect(state.agents['a2'].id).toBe('a2');
+        expect(state.agents.a1.id).toBe('a1');
+        expect(state.agents.a2.id).toBe('a2');
     });
 
     it('AGENTS_RECEIVED replaces existing agents', () => {
@@ -61,8 +60,8 @@ describe('reducer', () => {
             type: AGENTS_RECEIVED,
             data: [makeAgent({id: 'new'})],
         });
-        expect(state.agents['old']).toBeUndefined();
-        expect(state.agents['new']).toBeDefined();
+        expect(state.agents.old).toBeUndefined();
+        expect(state.agents.new).toBeDefined();
     });
 
     it('handles AGENT_RECEIVED', () => {
@@ -71,13 +70,13 @@ describe('reducer', () => {
             type: AGENT_RECEIVED,
             data: agent,
         });
-        expect(state.agents['a1']).toEqual(agent);
+        expect(state.agents.a1).toEqual(agent);
     });
 
     it('handles AGENT_STATUS_CHANGED for existing agent', () => {
         const prevState: PluginState = {
             ...initialState,
-            agents: {'a1': makeAgent({id: 'a1', status: 'RUNNING'})},
+            agents: {a1: makeAgent({id: 'a1', status: 'RUNNING'})},
         };
         const state = reducer(prevState, {
             type: AGENT_STATUS_CHANGED,
@@ -89,10 +88,10 @@ describe('reducer', () => {
                 updated_at: 2000,
             },
         });
-        expect(state.agents['a1'].status).toBe('FINISHED');
-        expect(state.agents['a1'].pr_url).toBe('https://github.com/pr/1');
-        expect(state.agents['a1'].summary).toBe('Done');
-        expect(state.agents['a1'].updated_at).toBe(2000);
+        expect(state.agents.a1.status).toBe('FINISHED');
+        expect(state.agents.a1.pr_url).toBe('https://github.com/pr/1');
+        expect(state.agents.a1.summary).toBe('Done');
+        expect(state.agents.a1.updated_at).toBe(2000);
     });
 
     it('AGENT_STATUS_CHANGED ignores unknown agent', () => {
@@ -122,14 +121,14 @@ describe('reducer', () => {
     it('handles AGENT_REMOVED', () => {
         const prevState: PluginState = {
             ...initialState,
-            agents: {'a1': makeAgent({id: 'a1'})},
+            agents: {a1: makeAgent({id: 'a1'})},
             selectedAgentId: 'a1',
         };
         const state = reducer(prevState, {
             type: AGENT_REMOVED,
             data: {agent_id: 'a1'},
         });
-        expect(state.agents['a1']).toBeUndefined();
+        expect(state.agents.a1).toBeUndefined();
         expect(state.selectedAgentId).toBeNull();
     });
 
@@ -137,8 +136,8 @@ describe('reducer', () => {
         const prevState: PluginState = {
             ...initialState,
             agents: {
-                'a1': makeAgent({id: 'a1'}),
-                'a2': makeAgent({id: 'a2'}),
+                a1: makeAgent({id: 'a1'}),
+                a2: makeAgent({id: 'a2'}),
             },
             selectedAgentId: 'a2',
         };
