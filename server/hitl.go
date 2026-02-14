@@ -433,7 +433,11 @@ func (p *Plugin) handlePlannerFinished(workflow *kvstore.HITLWorkflow, agent *cu
 		)
 		workflow.Phase = kvstore.PhasePlanReview
 		workflow.UpdatedAt = time.Now().UnixMilli()
-		_ = p.kvstore.SaveWorkflow(workflow)
+		if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+			p.API.LogError("Failed to save workflow after GetConversation error", "error", err.Error())
+		} else {
+			p.publishWorkflowPhaseChange(workflow)
+		}
 		return
 	}
 
@@ -662,7 +666,7 @@ func (p *Plugin) launchImplementerFromWorkflow(workflow *kvstore.HITLWorkflow) {
 		Prompt: cursor.Prompt{Text: promptText},
 		Source: cursor.Source{Repository: repoURL, Ref: workflow.Branch},
 		Target: &cursor.Target{
-			BranchName:   sanitizeBranchName(workflow.OriginalPrompt),
+			BranchName:   fmt.Sprintf("cursor/%s", sanitizeBranchName(workflow.OriginalPrompt)),
 			AutoCreatePr: workflow.AutoCreatePR,
 		},
 		Model: workflow.Model,

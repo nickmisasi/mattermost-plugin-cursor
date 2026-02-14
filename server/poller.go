@@ -300,7 +300,9 @@ func (p *Plugin) handleWorkflowAgentTerminal(record *kvstore.AgentRecord, agent 
 		// Implementation agent finished/failed/stopped -- mark workflow complete.
 		workflow.Phase = kvstore.PhaseComplete
 		workflow.UpdatedAt = time.Now().UnixMilli()
-		_ = p.kvstore.SaveWorkflow(workflow)
+		if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+			p.API.LogError("Failed to save workflow in implementing phase", "workflow_id", workflow.ID, "error", err.Error())
+		}
 		p.publishWorkflowPhaseChange(workflow)
 		return false // Let normal terminal handling run (PR link, reactions, etc.)
 	}

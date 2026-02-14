@@ -377,13 +377,6 @@ func TestPoller_NilCursorClient(t *testing.T) {
 func TestPoller_PlannerFinished_RoutesToWorkflow(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
-	siteURL := "http://localhost:8065"
-	api.On("GetConfig").Return(&model.Config{
-		ServiceSettings: model.ServiceSettings{
-			SiteURL: &siteURL,
-		},
-	}).Maybe()
-
 	record := &kvstore.AgentRecord{
 		CursorAgentID:  "planner-1",
 		Status:         "RUNNING",

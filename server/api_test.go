@@ -36,6 +36,12 @@ func setupAPITestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClie
 		Username: "testuser",
 	}, nil).Maybe()
 
+	// sendEphemeralToActionUser calls GetPost -- provide a default mock.
+	api.On("GetPost", mock.AnythingOfType("string")).Return(&model.Post{
+		Id:     "post-1",
+		RootId: "",
+	}, nil).Maybe()
+
 	cursorClient := &mockCursorClient{}
 	store := &mockKVStore{}
 

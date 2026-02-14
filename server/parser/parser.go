@@ -91,6 +91,7 @@ func Parse(message string, botMention string) *ParsedMention {
 
 	// Step 5b: Extract --flag options from the remainder.
 	remainder = extractFlags(remainder, result)
+	remainder = strings.TrimSpace(remainder)
 
 	// Step 6: Extract bracketed options block: match `\[([^\]]+)\]` at the start.
 	if loc := bracketedRe.FindStringSubmatchIndex(remainder); loc != nil {

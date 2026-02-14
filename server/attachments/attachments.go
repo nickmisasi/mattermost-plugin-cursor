@@ -178,8 +178,10 @@ func BuildPlanReviewAttachment(plan, repo, branch, modelName, workflowID, plugin
 
 	const maxPlanLen = 14000
 	text := plan
+	fallbackText := plan
 	if len(text) > maxPlanLen {
 		text = text[:maxPlanLen] + "\n\n*... (plan truncated -- view full plan in Cursor)*"
+		fallbackText = text // Use the same truncated text for fallback
 	}
 
 	return &model.SlackAttachment{
@@ -187,7 +189,7 @@ func BuildPlanReviewAttachment(plan, repo, branch, modelName, workflowID, plugin
 		Title:    title,
 		Text:     text,
 		Fields:   metadataFields(repo, branch, modelName),
-		Fallback: "Plan review: " + plan,
+		Fallback: "Plan review: " + fallbackText,
 		Actions: []*model.PostAction{
 			{
 				Id:    "acceptplan",

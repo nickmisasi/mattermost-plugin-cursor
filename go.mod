@@ -3,6 +3,7 @@ module github.com/mattermost/mattermost-plugin-cursor
 go 1.24.11
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/mattermost/mattermost-plugin-ai v1.8.1
 	github.com/mattermost/mattermost/server/public v0.1.22-0.20251105210629-8bf4a00724e2
@@ -20,7 +21,6 @@ require (
 	github.com/go-asn1-ber/asn1-ber v1.5.7 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/jsonschema-go v0.3.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect

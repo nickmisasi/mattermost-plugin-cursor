@@ -477,14 +477,20 @@ func (p *Plugin) handleArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	status := cursor.AgentStatus(record.Status)
 	if !status.IsTerminal() {
 		cursorClient := p.getCursorClient()
-		if cursorClient != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
-				p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
-			}
-			record.Status = string(cursor.AgentStatusStopped)
+		if cursorClient == nil {
+			p.API.LogError("Cannot stop agent: Cursor client not initialized", "agentID", agentID)
+			http.Error(w, "Cursor client not configured", http.StatusInternalServerError)
+			return
 		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
+			p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
+			http.Error(w, "Failed to stop agent", http.StatusInternalServerError)
+			return
+		}
+		record.Status = string(cursor.AgentStatusStopped)
 	}
 
 	record.Archived = true
@@ -685,6 +691,9 @@ func (p *Plugin) handleHITLResponse(w http.ResponseWriter, r *http.Request) {
 			acceptedAttachment := attachments.BuildPlanAcceptedAttachment(username, workflow.PlanIterationCount)
 			p.writePostActionResponseAttachment(w, acceptedAttachment)
 			go p.acceptPlan(workflow)
+		default:
+			p.API.LogError("Unknown HITL phase for accept", "phase", phase, "action", action)
+			p.writePostActionResponseAttachment(w, nil)
 		}
 
 	case "reject":
@@ -697,6 +706,9 @@ func (p *Plugin) handleHITLResponse(w http.ResponseWriter, r *http.Request) {
 			rejectedAttachment := attachments.BuildPlanRejectedAttachment(username)
 			p.writePostActionResponseAttachment(w, rejectedAttachment)
 			go p.rejectWorkflow(workflow)
+		default:
+			p.API.LogError("Unknown HITL phase for reject", "phase", phase, "action", action)
+			p.writePostActionResponseAttachment(w, nil)
 		}
 
 	default:
@@ -724,10 +736,16 @@ func (p *Plugin) writePostActionResponseAttachment(w http.ResponseWriter, attach
 
 // sendEphemeralToActionUser sends an ephemeral post to the user who clicked a PostAction button.
 func (p *Plugin) sendEphemeralToActionUser(request model.PostActionIntegrationRequest, message string) {
+	// Determine the thread root: if the post is already in a thread, use its RootId.
+	rootID := request.PostId
+	if post, err := p.API.GetPost(request.PostId); err == nil && post != nil && post.RootId != "" {
+		rootID = post.RootId
+	}
+
 	_ = p.API.SendEphemeralPost(request.UserId, &model.Post{
 		UserId:    p.getBotUserID(),
 		ChannelId: request.ChannelId,
-		RootId:    request.PostId,
+		RootId:    rootID,
 		Message:   message,
 	})
 }
