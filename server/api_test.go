@@ -344,12 +344,13 @@ func TestCancelAgent_Success(t *testing.T) {
 	p, api, cursorClient, store := setupAPITestPlugin(t)
 
 	record := &kvstore.AgentRecord{
-		CursorAgentID: "agent-1",
-		Status:        "RUNNING",
-		UserID:        "user-1",
-		TriggerPostID: "trigger-1",
-		PostID:        "post-1",
-		ChannelID:     "ch-1",
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		UserID:         "user-1",
+		TriggerPostID:  "trigger-1",
+		PostID:         "post-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
 	}
 
 	store.On("GetAgent", "agent-1").Return(record, nil)
@@ -366,10 +367,20 @@ func TestCancelAgent_Success(t *testing.T) {
 		return r.PostId == "trigger-1" && r.EmojiName == "no_entry_sign"
 	})).Return(nil, nil)
 
-	// Thread message
+	// Cancel attachment posted in thread: grey color
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
-		return p.RootId == "post-1" && p.UserId == "bot-user-id"
+		return p.RootId == "post-1" &&
+			p.UserId == "bot-user-id" &&
+			hasAttachmentWithColor(p, "#8B8FA7")
 	})).Return(&model.Post{Id: "msg-1"}, nil)
+
+	// GetPost/UpdatePost for updateBotReplyWithAttachment
+	api.On("GetPost", "bot-reply-1").Return(&model.Post{
+		Id:     "bot-reply-1",
+		UserId: "bot-user-id",
+		Props:  model.StringInterface{},
+	}, nil)
+	api.On("UpdatePost", mock.Anything).Return(nil, nil)
 
 	// WebSocket event
 	api.On("PublishWebSocketEvent", "agent_status_change", mock.Anything, mock.Anything).Return()
@@ -436,3 +447,5 @@ func TestCancelAgent_CursorAPIError(t *testing.T) {
 	rr := doRequest(p, http.MethodDelete, "/api/v1/agents/agent-1", nil, "user-1")
 	assert.Equal(t, http.StatusBadGateway, rr.Code)
 }
+
+

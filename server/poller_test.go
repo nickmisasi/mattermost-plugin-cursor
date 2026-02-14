@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -30,6 +29,13 @@ func setupPollerPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClien
 	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
 	api.On("GetPostThread", mock.Anything).Return(&model.PostList{Posts: map[string]*model.Post{}}, nil).Maybe()
 	api.On("UpdatePost", mock.Anything).Return(nil, nil).Maybe()
+
+	// GetPost for updateBotReplyWithAttachment calls.
+	api.On("GetPost", mock.Anything).Return(&model.Post{
+		Id:     "bot-reply-1",
+		UserId: "bot-user-id",
+		Props:  model.StringInterface{},
+	}, nil).Maybe()
 
 	cursorClient := &mockCursorClient{}
 	store := &mockKVStore{}
@@ -102,9 +108,11 @@ func TestPoller_CreatingToRunning(t *testing.T) {
 		Status: cursor.AgentStatusRunning,
 	}, nil)
 
-	// Running message posted in thread
+	// Short text notification posted in thread.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
-		return p.RootId == "root-1" && p.Message == ":gear: Agent is now running..."
+		return p.RootId == "root-1" &&
+			p.UserId == "bot-user-id" &&
+			containsSubstring(p.Message, "running")
 	})).Return(&model.Post{Id: "msg-1"}, nil)
 
 	// Status updated in store
@@ -122,11 +130,12 @@ func TestPoller_RunningToFinished(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
 	record := &kvstore.AgentRecord{
-		CursorAgentID: "agent-1",
-		Status:        "RUNNING",
-		TriggerPostID: "trigger-1",
-		PostID:        "root-1",
-		ChannelID:     "ch-1",
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
@@ -147,11 +156,12 @@ func TestPoller_RunningToFinished(t *testing.T) {
 		return r.PostId == "trigger-1" && r.EmojiName == "white_check_mark"
 	})).Return(nil, nil)
 
-	// Completion message with summary and PR link
+	// Short text notification posted in thread with PR link.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-1" &&
 			p.UserId == "bot-user-id" &&
-			containsAll(p.Message, "Agent finished", "Fixed the login bug", "View Pull Request", "pull/42")
+			containsSubstring(p.Message, "finished") &&
+			containsSubstring(p.Message, "View PR")
 	})).Return(&model.Post{Id: "msg-1"}, nil)
 
 	// Status updated
@@ -169,11 +179,12 @@ func TestPoller_RunningToFailed(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
 	record := &kvstore.AgentRecord{
-		CursorAgentID: "agent-1",
-		Status:        "RUNNING",
-		TriggerPostID: "trigger-1",
-		PostID:        "root-1",
-		ChannelID:     "ch-1",
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
@@ -193,10 +204,11 @@ func TestPoller_RunningToFailed(t *testing.T) {
 		return r.EmojiName == "x"
 	})).Return(nil, nil)
 
-	// Failure message
+	// Short text notification posted in thread.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-1" &&
-			containsAll(p.Message, "Agent failed", "Authentication error")
+			p.UserId == "bot-user-id" &&
+			containsSubstring(p.Message, "failed")
 	})).Return(&model.Post{Id: "msg-1"}, nil)
 
 	// Status updated
@@ -213,11 +225,12 @@ func TestPoller_RunningToStopped(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
 	record := &kvstore.AgentRecord{
-		CursorAgentID: "agent-1",
-		Status:        "RUNNING",
-		TriggerPostID: "trigger-1",
-		PostID:        "root-1",
-		ChannelID:     "ch-1",
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
@@ -236,10 +249,11 @@ func TestPoller_RunningToStopped(t *testing.T) {
 		return r.EmojiName == "no_entry_sign"
 	})).Return(nil, nil)
 
-	// Stopped message
+	// Short text notification posted in thread.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-1" &&
-			containsAll(p.Message, "Agent was stopped")
+			p.UserId == "bot-user-id" &&
+			containsSubstring(p.Message, "stopped")
 	})).Return(&model.Post{Id: "msg-1"}, nil)
 
 	// Status updated
@@ -339,14 +353,4 @@ func TestPoller_NilCursorClient(t *testing.T) {
 	p.pollAgentStatuses()
 
 	store.AssertNotCalled(t, "SaveAgent")
-}
-
-// containsAll checks if all substrings are present in the string.
-func containsAll(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if !strings.Contains(s, sub) {
-			return false
-		}
-	}
-	return true
 }

@@ -271,6 +271,16 @@ func TestMessageHasBeenPosted_EmptyPrompt_PostsHelp(t *testing.T) {
 		Message:   "@cursor",
 	}
 
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed on empty prompt error.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil)
+
 	// Expect bot reply with help text.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "post-1" &&
@@ -297,6 +307,16 @@ func TestMessageHasBeenPosted_LaunchesAgent(t *testing.T) {
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
 	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
 
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed when swapping to hourglass.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil)
+
 	// Add hourglass reaction
 	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
 		return r.PostId == "post-1" && r.EmojiName == "hourglass_flowing_sand"
@@ -314,7 +334,7 @@ func TestMessageHasBeenPosted_LaunchesAgent(t *testing.T) {
 		Status: cursor.AgentStatusCreating,
 	}, nil)
 
-	// Bot reply
+	// Bot reply (now uses attachment, so check UserId and RootId instead of Message)
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "post-1" && p.UserId == "bot-user-id"
 	})).Return(&model.Post{Id: "reply-1"}, nil)
@@ -324,7 +344,8 @@ func TestMessageHasBeenPosted_LaunchesAgent(t *testing.T) {
 		return r.CursorAgentID == "agent-123" &&
 			r.TriggerPostID == "post-1" &&
 			r.ChannelID == "ch-1" &&
-			r.Repository == "org/default-repo"
+			r.Repository == "org/default-repo" &&
+			r.BotReplyPostID == "reply-1"
 	})).Return(nil)
 
 	// Set thread mapping
@@ -359,6 +380,16 @@ func TestMessageHasBeenPosted_NoRepo_PostsError(t *testing.T) {
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
 	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
 
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed on repo error.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil)
+
 	// Expect error reply about no repo.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.Message == "No repository specified. Set a default with `/cursor settings` or specify one: `@cursor in org/repo, fix the bug`"
@@ -381,6 +412,16 @@ func TestMessageHasBeenPosted_APIError_AddsX(t *testing.T) {
 
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
 	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed when swapping to hourglass.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil)
 
 	// Hourglass added
 	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
@@ -538,6 +579,16 @@ func TestMessageHasBeenPosted_MentionInThread_FinishedAgent_LaunchesNew(t *testi
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
 	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
 
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed when swapping to hourglass.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil)
+
 	// Hourglass reaction
 	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
 		return r.EmojiName == "hourglass_flowing_sand"
@@ -588,6 +639,16 @@ func TestMessageHasBeenPosted_ForceNew_InThread(t *testing.T) {
 	// Default resolution
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
 	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed when swapping to hourglass.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil)
 
 	// ForceNew bypasses thread agent check and goes straight to launch.
 	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {

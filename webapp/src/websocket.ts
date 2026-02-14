@@ -25,4 +25,5 @@ export function registerWebSocketHandlers(
             store.dispatch(websocketAgentCreated(msg.data) as any);
         },
     );
+
 }

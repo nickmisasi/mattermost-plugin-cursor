@@ -610,12 +610,13 @@ func TestLaunch_Success(t *testing.T) {
 		return r.EmojiName == "hourglass_flowing_sand"
 	})).Return(&model.Reaction{}, nil)
 
-	// Save agent record
+	// Save agent record (includes BotReplyPostID)
 	env.store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
 		return r.CursorAgentID == "new-agent" &&
 			r.ChannelID == "ch-1" &&
 			r.UserID == "user-1" &&
-			r.Repository == "org/repo"
+			r.Repository == "org/repo" &&
+			r.BotReplyPostID == "bot-post-1"
 	})).Return(nil)
 
 	// Set thread mapping

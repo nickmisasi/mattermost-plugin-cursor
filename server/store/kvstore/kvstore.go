@@ -4,8 +4,9 @@ package kvstore
 type AgentRecord struct {
 	CursorAgentID string `json:"cursorAgentId"`
 	PostID        string `json:"postId"`        // The bot's reply post (thread root)
-	TriggerPostID string `json:"triggerPostId"` // The user's original @mention post
-	ChannelID     string `json:"channelId"`
+	TriggerPostID  string `json:"triggerPostId"`          // The user's original @mention post
+	BotReplyPostID string `json:"botReplyPostId,omitempty"` // The bot's initial reply (for updating on terminal status)
+	ChannelID      string `json:"channelId"`
 	UserID        string `json:"userId"`
 	Status        string `json:"status"`
 	Repository    string `json:"repository"`

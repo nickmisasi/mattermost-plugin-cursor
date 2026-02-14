@@ -11,6 +11,22 @@ interface Props {
     onBack: () => void;
 }
 
+function getStatusBarClass(status: string): string {
+    switch (status) {
+    case 'CREATING':
+    case 'RUNNING':
+        return 'cursor-agent-detail-status-bar--blue';
+    case 'FINISHED':
+        return 'cursor-agent-detail-status-bar--green';
+    case 'FAILED':
+        return 'cursor-agent-detail-status-bar--red';
+    case 'STOPPED':
+        return 'cursor-agent-detail-status-bar--grey';
+    default:
+        return 'cursor-agent-detail-status-bar--grey';
+    }
+}
+
 const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
     const dispatch = useDispatch();
     const [followupText, setFollowupText] = useState('');
@@ -31,6 +47,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
     return (
         <div className='cursor-agent-detail'>
+            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status)}`} />
             <div className='cursor-agent-detail-back'>
                 <button
                     className='btn btn-link'
@@ -54,6 +71,13 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                 <div className='cursor-agent-detail-section'>
                     <div className='cursor-agent-detail-label'>{'Branch'}</div>
                     <div className='cursor-agent-detail-value'>{agent.branch}</div>
+                </div>
+            )}
+
+            {agent.model && (
+                <div className='cursor-agent-detail-section'>
+                    <div className='cursor-agent-detail-label'>{'Model'}</div>
+                    <div className='cursor-agent-detail-value'>{agent.model}</div>
                 </div>
             )}
 

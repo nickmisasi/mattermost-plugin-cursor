@@ -51,17 +51,40 @@ const AgentCard: React.FC<Props> = ({agent, onClick}) => {
                 <span className='cursor-agent-card-repo'>{repoShort}</span>
                 <span className='cursor-agent-card-time'>{elapsed}</span>
             </div>
+            {(agent.branch || agent.model) && (
+                <div className='cursor-agent-card-meta'>
+                    {agent.branch && (
+                        <span className='cursor-agent-card-badge'>{agent.branch}</span>
+                    )}
+                    {agent.model && (
+                        <span className='cursor-agent-card-badge'>{agent.model}</span>
+                    )}
+                </div>
+            )}
             {promptPreview && (
                 <div className='cursor-agent-card-prompt'>{promptPreview}</div>
             )}
-            {agent.pr_url && (
-                <ExternalLink
-                    className='cursor-agent-card-pr'
-                    href={agent.pr_url}
-                    onClick={(e) => e.stopPropagation()}
-                >
-                    {'View PR'}
-                </ExternalLink>
+            {(agent.pr_url || agent.cursor_url) && (
+                <div className='cursor-agent-card-links'>
+                    {agent.pr_url && (
+                        <ExternalLink
+                            className='cursor-agent-card-link'
+                            href={agent.pr_url}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {'View PR'}
+                        </ExternalLink>
+                    )}
+                    {agent.cursor_url && (
+                        <ExternalLink
+                            className='cursor-agent-card-link'
+                            href={agent.cursor_url}
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            {'Open in Cursor'}
+                        </ExternalLink>
+                    )}
+                </div>
             )}
         </div>
     );
