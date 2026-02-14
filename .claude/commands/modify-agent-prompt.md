@@ -248,6 +248,41 @@ launchReq := cursor.LaunchAgentRequest{
 - `branch` follows the same cascade
 - `modelName` follows the same cascade
 
+## Planner Agent Prompt (HITL Plan Loop Path)
+
+When the HITL plan loop is enabled, a separate planner agent is launched with a different prompt pipeline:
+
+```
+Approved Context (from HITL context review)
+    |
+    v
+Planner System Prompt (server/hitl.go or PlannerSystemPrompt config)
+    |-- Strong "DO NOT MODIFY CODE" instructions
+    |-- Structured output format (Summary, Files, Steps, Testing, Risks)
+    |
+    v
+Cursor API LaunchAgent Request
+    |-- target.autoCreatePr = false
+    |-- target.autoBranch = false  (CRITICAL — prevents orphan branches)
+```
+
+The planner prompt is separate from the implementation system prompt. It lives in `server/hitl.go` as `defaultPlannerPrompt` and is overridable via `PlannerSystemPrompt` in System Console config.
+
+For plan iterations, the prompt accumulates context:
+```xml
+{approved context}
+
+<previous-plan>
+{last plan output}
+</previous-plan>
+
+<user-feedback>
+{user's iteration feedback}
+</user-feedback>
+```
+
+See the `/launch-planner-agent` skill for full details on the planner agent lifecycle, conversation extraction, and gotchas.
+
 ## Slash Command Prompt (Different Path)
 
 When launched via `/cursor fix the bug`, the prompt takes a simpler path in `server/command/command.go`:

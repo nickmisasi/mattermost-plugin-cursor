@@ -218,6 +218,31 @@ curl -u "$CURSOR_API_KEY:" \
 curl -u "$CURSOR_API_KEY:" https://api.cursor.com/v0/models
 ```
 
+### Get Agent Conversation
+
+```bash
+curl -u "$CURSOR_API_KEY:" https://api.cursor.com/v0/agents/AGENT_ID/conversation
+```
+
+Returns `messages[]` with `type` ("user_message" / "assistant_message") and `text`. The plan (if this was a planner agent) is in the **last** `assistant_message`. Earlier assistant messages are progress updates.
+
+### Launch Planner Agent (Read-Only)
+
+```bash
+curl -u "$CURSOR_API_KEY:" \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": {"text": "## PLANNING MODE — DO NOT MODIFY CODE\n\nYour task is to analyze and plan only..."},
+    "source": {"repository": "https://github.com/owner/repo", "ref": "main"},
+    "target": {"autoCreatePr": false, "autoBranch": false},
+    "model": "auto"
+  }' \
+  https://api.cursor.com/v0/agents
+```
+
+**Critical**: Always set `autoBranch: false` for planner agents. The API defaults `autoBranch: true` and will create orphan branches even when no `branchName` is specified.
+
 ### Stop Agent
 
 ```bash
