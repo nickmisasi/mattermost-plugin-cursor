@@ -403,6 +403,9 @@ func TestCancelAgent_Success(t *testing.T) {
 	}, nil)
 	api.On("UpdatePost", mock.Anything).Return(nil, nil)
 
+	// Workflow cleanup (no associated workflow)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
 	// WebSocket event
 	api.On("PublishWebSocketEvent", "agent_status_change", mock.Anything, mock.Anything).Return()
 
@@ -871,6 +874,9 @@ func TestArchiveAgent_Success(t *testing.T) {
 		return r.Archived && r.Status == "FINISHED"
 	})).Return(nil)
 
+	// Workflow cleanup (no associated workflow)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
 	rr := doRequest(p, http.MethodPost, "/api/v1/agents/agent-1/archive", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -894,6 +900,9 @@ func TestArchiveAgent_StopsRunningAgent(t *testing.T) {
 	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
 		return r.Archived && r.Status == "STOPPED"
 	})).Return(nil)
+
+	// Workflow cleanup (no associated workflow)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 
 	rr := doRequest(p, http.MethodPost, "/api/v1/agents/agent-1/archive", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)

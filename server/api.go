@@ -175,6 +175,7 @@ type AgentResponse struct {
 	Repository         string `json:"repository"`
 	Branch             string `json:"branch"`
 	Prompt             string `json:"prompt"`
+	Description        string `json:"description"`
 	PrURL              string `json:"pr_url"`
 	CursorURL          string `json:"cursor_url"`
 	ChannelID          string `json:"channel_id"`
@@ -226,21 +227,22 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 		}
 
 		agentResp := AgentResponse{
-			ID:         a.CursorAgentID,
-			Status:     a.Status,
-			Repository: a.Repository,
-			Branch:     a.Branch,
-			PrURL:      a.PrURL,
-			CursorURL:  fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
-			ChannelID:  a.ChannelID,
-			PostID:     a.PostID,
-			RootPostID: a.PostID,
-			Prompt:     a.Prompt,
-			Model:      a.Model,
-			Summary:    a.Summary,
-			CreatedAt:  a.CreatedAt,
-			UpdatedAt:  a.UpdatedAt,
-			Archived:   a.Archived,
+			ID:          a.CursorAgentID,
+			Status:      a.Status,
+			Repository:  a.Repository,
+			Branch:      a.Branch,
+			PrURL:       a.PrURL,
+			CursorURL:   fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
+			ChannelID:   a.ChannelID,
+			PostID:      a.PostID,
+			RootPostID:  a.PostID,
+			Prompt:      a.Prompt,
+			Description: a.Description,
+			Model:       a.Model,
+			Summary:     a.Summary,
+			CreatedAt:   a.CreatedAt,
+			UpdatedAt:   a.UpdatedAt,
+			Archived:    a.Archived,
 		}
 
 		// Look up workflow association for HITL-aware agents.
@@ -295,21 +297,22 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := AgentResponse{
-		ID:         record.CursorAgentID,
-		Status:     record.Status,
-		Repository: record.Repository,
-		Branch:     record.Branch,
-		PrURL:      record.PrURL,
-		CursorURL:  fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
-		ChannelID:  record.ChannelID,
-		PostID:     record.PostID,
-		RootPostID: record.PostID,
-		Prompt:     record.Prompt,
-		Model:      record.Model,
-		Summary:    record.Summary,
-		CreatedAt:  record.CreatedAt,
-		UpdatedAt:  record.UpdatedAt,
-		Archived:   record.Archived,
+		ID:          record.CursorAgentID,
+		Status:      record.Status,
+		Repository:  record.Repository,
+		Branch:      record.Branch,
+		PrURL:       record.PrURL,
+		CursorURL:   fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
+		ChannelID:   record.ChannelID,
+		PostID:      record.PostID,
+		RootPostID:  record.PostID,
+		Prompt:      record.Prompt,
+		Description: record.Description,
+		Model:       record.Model,
+		Summary:     record.Summary,
+		CreatedAt:   record.CreatedAt,
+		UpdatedAt:   record.UpdatedAt,
+		Archived:    record.Archived,
 	}
 
 	// Look up workflow association.
@@ -428,6 +431,9 @@ func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 		p.API.LogError("Failed to update agent record", "agentID", agentID, "error", err.Error())
 	}
 
+	// Transition any associated HITL workflow to rejected.
+	p.rejectWorkflowForAgent(agentID)
+
 	// Update thread.
 	if record.TriggerPostID != "" {
 		p.removeReaction(record.TriggerPostID, "hourglass_flowing_sand")
@@ -500,6 +506,9 @@ func (p *Plugin) handleArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	// Transition any associated HITL workflow to rejected.
+	p.rejectWorkflowForAgent(agentID)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})

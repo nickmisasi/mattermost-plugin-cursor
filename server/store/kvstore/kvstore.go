@@ -14,6 +14,7 @@ type AgentRecord struct {
 	TargetBranch   string `json:"targetBranch,omitempty"` // Cursor-created branch (e.g., "cursor/fix-login")
 	PrURL          string `json:"prUrl"`
 	Prompt         string `json:"prompt"`
+	Description    string `json:"description,omitempty"` // AI-generated short task summary
 	Model          string `json:"model"`
 	Summary        string `json:"summary"`
 	CreatedAt      int64  `json:"createdAt"`          // Unix millis

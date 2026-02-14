@@ -33,10 +33,12 @@ function getElapsedTime(createdAt: number): string {
 const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) => {
     const history = useHistory();
     const elapsed = getElapsedTime(agent.created_at);
+    const isAborted = agent.status === 'STOPPED' || agent.status === 'FAILED';
     const repoShort = agent.repository.split('/').slice(-2).join('/');
-    const promptPreview = agent.prompt && agent.prompt.length > 80 ?
-        agent.prompt.substring(0, 80) + '...' :
-        (agent.prompt || '');
+    const displayText = agent.description || agent.prompt || '';
+    const promptPreview = displayText.length > 80 ?
+        displayText.substring(0, 80) + '...' :
+        displayText;
 
     return (
         <div
@@ -54,7 +56,7 @@ const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) =>
             <div className='cursor-agent-card-header'>
                 <StatusBadge status={agent.status}/>
                 <span className='cursor-agent-card-repo'>{repoShort}</span>
-                {agent.workflow_phase && (
+                {agent.workflow_phase && !(isAborted && agent.workflow_phase !== 'rejected' && agent.workflow_phase !== 'complete') && (
                     <PhaseBadge phase={agent.workflow_phase}/>
                 )}
                 <span className='cursor-agent-card-time'>{elapsed}</span>

@@ -17,6 +17,7 @@ export interface Agent {
     repository: string;
     branch: string;
     prompt: string;
+    description?: string;
     pr_url: string;
     cursor_url: string;
     channel_id: string;
@@ -92,6 +93,7 @@ export interface AgentCreatedEvent {
     repository: string;
     branch: string;
     prompt: string;
+    description?: string;
     channel_id: string;
     post_id: string;
     cursor_url: string;
