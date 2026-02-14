@@ -47,7 +47,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
     return (
         <div className='cursor-agent-detail'>
-            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status)}`} />
+            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status)}`}/>
             <div className='cursor-agent-detail-back'>
                 <button
                     className='btn btn-link'

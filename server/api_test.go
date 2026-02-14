@@ -447,5 +447,3 @@ func TestCancelAgent_CursorAPIError(t *testing.T) {
 	rr := doRequest(p, http.MethodDelete, "/api/v1/agents/agent-1", nil, "user-1")
 	assert.Equal(t, http.StatusBadGateway, rr.Code)
 }
-
-

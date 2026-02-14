@@ -366,29 +366,6 @@ func (p *Plugin) findAgentForPR(pr ghPullRequest) *kvstore.AgentRecord {
 
 // --- Helpers ---
 
-// postThreadNotification posts a message in the agent's Mattermost thread.
-func (p *Plugin) postThreadNotification(agent *kvstore.AgentRecord, message string) {
-	if agent.PostID == "" {
-		p.API.LogWarn("Cannot post thread notification: no root post ID",
-			"agent_id", agent.CursorAgentID)
-		return
-	}
-
-	_, appErr := p.API.CreatePost(&model.Post{
-		UserId:    p.getBotUserID(),
-		ChannelId: agent.ChannelID,
-		RootId:    agent.PostID,
-		Message:   message,
-	})
-	if appErr != nil {
-		p.API.LogError("Failed to post GitHub notification in thread",
-			"error", appErr.Error(),
-			"agent_id", agent.CursorAgentID,
-			"root_post_id", agent.PostID,
-		)
-	}
-}
-
 // postThreadNotificationWithAttachment posts a SlackAttachment in the agent's Mattermost thread.
 func (p *Plugin) postThreadNotificationWithAttachment(agent *kvstore.AgentRecord, attachment *model.SlackAttachment) {
 	if agent.PostID == "" {
