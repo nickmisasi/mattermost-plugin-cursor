@@ -193,6 +193,47 @@ func (m *mockKVStore) MarkDeliveryProcessed(deliveryID string) error {
 	return m.Called(deliveryID).Error(0)
 }
 
+func (m *mockKVStore) GetWorkflow(workflowID string) (*kvstore.HITLWorkflow, error) {
+	args := m.Called(workflowID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.HITLWorkflow), args.Error(1)
+}
+
+func (m *mockKVStore) SaveWorkflow(workflow *kvstore.HITLWorkflow) error {
+	return m.Called(workflow).Error(0)
+}
+
+func (m *mockKVStore) DeleteWorkflow(workflowID string) error {
+	return m.Called(workflowID).Error(0)
+}
+
+func (m *mockKVStore) GetWorkflowByThread(rootPostID string) (*kvstore.HITLWorkflow, error) {
+	args := m.Called(rootPostID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.HITLWorkflow), args.Error(1)
+}
+
+func (m *mockKVStore) GetWorkflowByAgent(cursorAgentID string) (string, error) {
+	args := m.Called(cursorAgentID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockKVStore) SetThreadWorkflow(rootPostID string, workflowID string) error {
+	return m.Called(rootPostID, workflowID).Error(0)
+}
+
+func (m *mockKVStore) SetAgentWorkflow(cursorAgentID string, workflowID string) error {
+	return m.Called(cursorAgentID, workflowID).Error(0)
+}
+
+func (m *mockKVStore) DeleteAgentWorkflow(cursorAgentID string) error {
+	return m.Called(cursorAgentID).Error(0)
+}
+
 type testEnv struct {
 	handler      Command
 	api          *plugintest.API
@@ -287,6 +328,8 @@ func TestList_WithAgents(t *testing.T) {
 			{ID: "agent-222222222", Status: cursor.AgentStatusFinished},
 		},
 	}, nil)
+	// No workflow associations.
+	env.store.On("GetWorkflowByAgent", mock.Anything).Return("", nil)
 
 	resp, err := env.handler.Handle(&model.CommandArgs{
 		Command: "/cursor list",
@@ -319,6 +362,7 @@ func TestList_SyncsRemoteStatus(t *testing.T) {
 	env.store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
 		return r.CursorAgentID == "agent-sync" && r.Status == "FINISHED"
 	})).Return(nil)
+	env.store.On("GetWorkflowByAgent", "agent-sync").Return("", nil)
 
 	resp, err := env.handler.Handle(&model.CommandArgs{
 		Command: "/cursor list",
@@ -360,6 +404,7 @@ func TestStatus_ValidAgent(t *testing.T) {
 		PostID:        "post-1",
 		ChannelID:     "ch-1",
 	}, nil)
+	env.store.On("GetWorkflowByAgent", "abc123").Return("", nil)
 
 	resp, err := env.handler.Handle(&model.CommandArgs{
 		Command: "/cursor status abc123",
@@ -403,11 +448,13 @@ func TestCancel_MissingID(t *testing.T) {
 func TestCancel_NotOwner(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "abc").Return(nil, nil)
 	env.store.On("GetAgent", "abc").Return(&kvstore.AgentRecord{
 		CursorAgentID: "abc",
 		UserID:        "other-user",
 		Status:        "RUNNING",
 	}, nil)
+	env.store.On("GetWorkflowByAgent", "abc").Return("", nil)
 
 	resp, err := env.handler.Handle(&model.CommandArgs{
 		Command: "/cursor cancel abc",
@@ -421,11 +468,13 @@ func TestCancel_NotOwner(t *testing.T) {
 func TestCancel_AlreadyFinished(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "abc").Return(nil, nil)
 	env.store.On("GetAgent", "abc").Return(&kvstore.AgentRecord{
 		CursorAgentID: "abc",
 		UserID:        "user-1",
 		Status:        "FINISHED",
 	}, nil)
+	env.store.On("GetWorkflowByAgent", "abc").Return("", nil)
 
 	resp, err := env.handler.Handle(&model.CommandArgs{
 		Command: "/cursor cancel abc",
@@ -439,6 +488,8 @@ func TestCancel_AlreadyFinished(t *testing.T) {
 func TestCancel_Success(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "abc").Return(nil, nil)
+	env.store.On("GetWorkflowByAgent", "abc").Return("", nil)
 	env.store.On("GetAgent", "abc").Return(&kvstore.AgentRecord{
 		CursorAgentID: "abc",
 		UserID:        "user-1",
@@ -703,6 +754,7 @@ func TestUnknownFallsToLaunch(t *testing.T) {
 func TestCancel_NotFound(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "nonexistent").Return(nil, nil)
 	env.store.On("GetAgent", "nonexistent").Return(nil, nil)
 
 	resp, err := env.handler.Handle(&model.CommandArgs{
@@ -717,6 +769,8 @@ func TestCancel_NotFound(t *testing.T) {
 func TestCancel_StopAPIError(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "abc").Return(nil, nil)
+	env.store.On("GetWorkflowByAgent", "abc").Return("", nil)
 	env.store.On("GetAgent", "abc").Return(&kvstore.AgentRecord{
 		CursorAgentID: "abc",
 		UserID:        "user-1",
@@ -737,6 +791,8 @@ func TestCancel_StopAPIError(t *testing.T) {
 func TestCancel_AlreadyFailed(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "abc").Return(nil, nil)
+	env.store.On("GetWorkflowByAgent", "abc").Return("", nil)
 	env.store.On("GetAgent", "abc").Return(&kvstore.AgentRecord{
 		CursorAgentID: "abc",
 		UserID:        "user-1",
@@ -755,6 +811,8 @@ func TestCancel_AlreadyFailed(t *testing.T) {
 func TestCancel_AlreadyStopped(t *testing.T) {
 	env := setupTest(t)
 
+	env.store.On("GetWorkflow", "abc").Return(nil, nil)
+	env.store.On("GetWorkflowByAgent", "abc").Return("", nil)
 	env.store.On("GetAgent", "abc").Return(&kvstore.AgentRecord{
 		CursorAgentID: "abc",
 		UserID:        "user-1",
@@ -984,4 +1042,333 @@ func TestDispatch_AllSubcommands(t *testing.T) {
 			tt.check(t, env, resp)
 		})
 	}
+}
+
+// --- HITL command tests ---
+
+func TestHelp_ContainsHITLFlags(t *testing.T) {
+	env := setupTest(t)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor help",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "--direct")
+	assert.Contains(t, resp.Text, "--no-review")
+	assert.Contains(t, resp.Text, "--no-plan")
+	assert.Contains(t, resp.Text, "HITL")
+	assert.Contains(t, resp.Text, "workflowID")
+}
+
+func TestStatus_ShowsWorkflowPhase(t *testing.T) {
+	env := setupTest(t)
+
+	env.cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:     "agent-1",
+		Status: cursor.AgentStatusFinished,
+		Source: cursor.Source{
+			Repository: "https://github.com/org/repo",
+			Ref:        "main",
+		},
+		Target: cursor.AgentTarget{
+			BranchName: "cursor/fix-bug",
+		},
+	}, nil)
+	env.store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "post-1",
+		ChannelID:     "ch-1",
+	}, nil)
+	env.store.On("GetWorkflowByAgent", "agent-1").Return("workflow-1", nil)
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:                 "workflow-1",
+		Phase:              kvstore.PhasePlanReview,
+		PlanIterationCount: 2,
+	}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor status agent-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "plan_review")
+	assert.Contains(t, resp.Text, "v3") // iteration 2 -> "Plan v3"
+	assert.Contains(t, resp.Text, "HITL Workflow")
+}
+
+func TestStatus_NoWorkflow(t *testing.T) {
+	env := setupTest(t)
+
+	env.cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:     "agent-1",
+		Status: cursor.AgentStatusRunning,
+		Source: cursor.Source{
+			Repository: "https://github.com/org/repo",
+			Ref:        "main",
+		},
+		Target: cursor.AgentTarget{
+			BranchName: "cursor/fix-bug",
+		},
+	}, nil)
+	env.store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "post-1",
+		ChannelID:     "ch-1",
+	}, nil)
+	env.store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor status agent-1",
+	})
+
+	require.NoError(t, err)
+	assert.NotContains(t, resp.Text, "HITL Workflow")
+}
+
+func TestCancel_CancelsWorkflowByWorkflowID(t *testing.T) {
+	env := setupTest(t)
+
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:             "workflow-1",
+		UserID:         "user-1",
+		ChannelID:      "ch-1",
+		RootPostID:     "root-1",
+		TriggerPostID:  "trigger-1",
+		Phase:          kvstore.PhasePlanning,
+		PlannerAgentID: "planner-1",
+	}, nil)
+	env.store.On("GetAgent", "planner-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "planner-1",
+		Status:        "RUNNING",
+	}, nil)
+	env.cursorClient.On("StopAgent", mock.Anything, "planner-1").Return(&cursor.StopResponse{}, nil)
+	env.store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.CursorAgentID == "planner-1" && r.Status == "STOPPED"
+	})).Return(nil)
+	env.store.On("SaveWorkflow", mock.MatchedBy(func(w *kvstore.HITLWorkflow) bool {
+		return w.Phase == kvstore.PhaseRejected
+	})).Return(nil)
+
+	env.api.On("RemoveReaction", mock.Anything).Return(nil)
+	env.api.On("AddReaction", mock.Anything).Return(&model.Reaction{}, nil)
+	env.api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor cancel workflow-1",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "cancelled")
+	env.cursorClient.AssertCalled(t, "StopAgent", mock.Anything, "planner-1")
+}
+
+func TestCancel_CancelsWorkflowByAgentID(t *testing.T) {
+	env := setupTest(t)
+
+	// Not a workflow ID.
+	env.store.On("GetWorkflow", "planner-1").Return(nil, nil)
+
+	env.store.On("GetAgent", "planner-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "planner-1",
+		UserID:        "user-1",
+		Status:        "RUNNING",
+	}, nil)
+	env.store.On("GetWorkflowByAgent", "planner-1").Return("workflow-1", nil)
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:             "workflow-1",
+		UserID:         "user-1",
+		ChannelID:      "ch-1",
+		RootPostID:     "root-1",
+		TriggerPostID:  "trigger-1",
+		Phase:          kvstore.PhasePlanning,
+		PlannerAgentID: "planner-1",
+	}, nil)
+
+	env.store.On("GetAgent", "planner-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "planner-1",
+		Status:        "RUNNING",
+	}, nil)
+	env.cursorClient.On("StopAgent", mock.Anything, "planner-1").Return(&cursor.StopResponse{}, nil)
+	env.store.On("SaveAgent", mock.Anything).Return(nil)
+	env.store.On("SaveWorkflow", mock.Anything).Return(nil)
+
+	env.api.On("RemoveReaction", mock.Anything).Return(nil)
+	env.api.On("AddReaction", mock.Anything).Return(&model.Reaction{}, nil)
+	env.api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor cancel planner-1",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "cancelled")
+}
+
+func TestCancel_WorkflowAlreadyComplete(t *testing.T) {
+	env := setupTest(t)
+
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:     "workflow-1",
+		UserID: "user-1",
+		Phase:  kvstore.PhaseComplete,
+	}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor cancel workflow-1",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "already complete")
+}
+
+func TestCancel_WorkflowNotOwner(t *testing.T) {
+	env := setupTest(t)
+
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:     "workflow-1",
+		UserID: "other-user",
+		Phase:  kvstore.PhasePlanning,
+	}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor cancel workflow-1",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "only cancel your own")
+}
+
+func TestCancel_WorkflowInContextReview_NoAgents(t *testing.T) {
+	env := setupTest(t)
+
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:            "workflow-1",
+		UserID:        "user-1",
+		ChannelID:     "ch-1",
+		RootPostID:    "root-1",
+		TriggerPostID: "trigger-1",
+		Phase:         kvstore.PhaseContextReview,
+		// No planner or implementer agents yet.
+	}, nil)
+	env.store.On("SaveWorkflow", mock.MatchedBy(func(w *kvstore.HITLWorkflow) bool {
+		return w.Phase == kvstore.PhaseRejected
+	})).Return(nil)
+
+	env.api.On("RemoveReaction", mock.Anything).Return(nil)
+	env.api.On("AddReaction", mock.Anything).Return(&model.Reaction{}, nil)
+	env.api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor cancel workflow-1",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "cancelled")
+	env.cursorClient.AssertNotCalled(t, "StopAgent")
+}
+
+func TestList_ShowsWorkflowPhase(t *testing.T) {
+	env := setupTest(t)
+
+	agents := []*kvstore.AgentRecord{
+		{CursorAgentID: "agent-111111111", Status: "RUNNING", Repository: "org/repo1", UserID: "user-1"},
+	}
+
+	env.store.On("GetAgentsByUser", "user-1").Return(agents, nil)
+	env.cursorClient.On("ListAgents", mock.Anything, 100, "").Return(&cursor.ListAgentsResponse{
+		Agents: []cursor.Agent{
+			{ID: "agent-111111111", Status: cursor.AgentStatusRunning},
+		},
+	}, nil)
+	env.store.On("GetWorkflowByAgent", "agent-111111111").Return("workflow-1", nil)
+	env.store.On("GetWorkflow", "workflow-1").Return(&kvstore.HITLWorkflow{
+		ID:    "workflow-1",
+		Phase: kvstore.PhasePlanning,
+	}, nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor list",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Phase")
+	assert.Contains(t, resp.Text, "planning")
+}
+
+func TestList_NoWorkflow_EmptyPhase(t *testing.T) {
+	env := setupTest(t)
+
+	agents := []*kvstore.AgentRecord{
+		{CursorAgentID: "agent-222222222", Status: "RUNNING", Repository: "org/repo", UserID: "user-1"},
+	}
+
+	env.store.On("GetAgentsByUser", "user-1").Return(agents, nil)
+	env.cursorClient.On("ListAgents", mock.Anything, 100, "").Return(&cursor.ListAgentsResponse{
+		Agents: []cursor.Agent{
+			{ID: "agent-222222222", Status: cursor.AgentStatusRunning},
+		},
+	}, nil)
+	env.store.On("GetWorkflowByAgent", "agent-222222222").Return("", nil)
+
+	resp, err := env.handler.Handle(&model.CommandArgs{
+		Command: "/cursor list",
+		UserId:  "user-1",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "Phase")
+	assert.Contains(t, resp.Text, "RUNNING")
+}
+
+func TestPhaseToEmoji(t *testing.T) {
+	tests := []struct {
+		phase    string
+		expected string
+	}{
+		{kvstore.PhaseContextReview, ":eyes:"},
+		{kvstore.PhasePlanning, ":hourglass:"},
+		{kvstore.PhasePlanReview, ":clipboard:"},
+		{kvstore.PhaseImplementing, ":gear:"},
+		{kvstore.PhaseRejected, ":no_entry_sign:"},
+		{kvstore.PhaseComplete, ":white_check_mark:"},
+		{"unknown", ":grey_question:"},
+		{"", ":grey_question:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.phase, func(t *testing.T) {
+			assert.Equal(t, tt.expected, phaseToEmoji(tt.phase))
+		})
+	}
+}
+
+func TestSafeUserEnableContextReview(t *testing.T) {
+	assert.Equal(t, "", safeUserEnableContextReview(nil))
+
+	assert.Equal(t, "", safeUserEnableContextReview(&kvstore.UserSettings{}))
+
+	bTrue := true
+	assert.Equal(t, "true", safeUserEnableContextReview(&kvstore.UserSettings{EnableContextReview: &bTrue}))
+
+	bFalse := false
+	assert.Equal(t, "false", safeUserEnableContextReview(&kvstore.UserSettings{EnableContextReview: &bFalse}))
+}
+
+func TestSafeUserEnablePlanLoop(t *testing.T) {
+	assert.Equal(t, "", safeUserEnablePlanLoop(nil))
+
+	assert.Equal(t, "", safeUserEnablePlanLoop(&kvstore.UserSettings{}))
+
+	bTrue := true
+	assert.Equal(t, "true", safeUserEnablePlanLoop(&kvstore.UserSettings{EnablePlanLoop: &bTrue}))
+
+	bFalse := false
+	assert.Equal(t, "false", safeUserEnablePlanLoop(&kvstore.UserSettings{EnablePlanLoop: &bFalse}))
 }

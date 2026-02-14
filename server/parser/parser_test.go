@@ -39,16 +39,48 @@ func TestParse(t *testing.T) {
 
 		// --- Natural language repo ---
 		{
-			name:       "in repo short name",
+			name:       "in repo short name no longer matches",
 			message:    "@cursor in backend-api, fix the auth issue",
 			botMention: "@cursor",
-			expected:   &ParsedMention{Prompt: "fix the auth issue", Repository: "backend-api"},
+			expected:   &ParsedMention{Prompt: "in backend-api, fix the auth issue"},
 		},
 		{
 			name:       "in org/repo",
 			message:    "@cursor in org/repo, fix the auth issue",
 			botMention: "@cursor",
 			expected:   &ParsedMention{Prompt: "fix the auth issue", Repository: "org/repo"},
+		},
+
+		// --- False positive prevention for "in <word>" ---
+		{
+			name:       "in common word not extracted as repo",
+			message:    "@cursor fix the alignment issue in compact mode",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the alignment issue in compact mode"},
+		},
+		{
+			name:       "in production not extracted as repo",
+			message:    "@cursor fix issue in production environment",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix issue in production environment"},
+		},
+		{
+			name:       "in org/repo extracted correctly",
+			message:    "@cursor fix issue in mattermost/mattermost",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix issue", Repository: "mattermost/mattermost"},
+		},
+		{
+			name:       "in org/repo with comma extracted correctly",
+			message:    "@cursor fix issue in org/repo, on main",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix issue on main", Repository: "org/repo"},
+		},
+		{
+			name:       "repo=single-word still works",
+			message:    "@cursor repo=myrepo fix issue",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix issue", Repository: "myrepo"},
 		},
 
 		// --- Natural language model ---
@@ -61,10 +93,10 @@ func TestParse(t *testing.T) {
 
 		// --- Combined natural language ---
 		{
-			name:       "in repo with model",
-			message:    "@cursor in backend-api, with opus, fix it",
+			name:       "in org/repo with model",
+			message:    "@cursor in org/backend-api, with opus, fix it",
 			botMention: "@cursor",
-			expected:   &ParsedMention{Prompt: "fix it", Repository: "backend-api", Model: "opus"},
+			expected:   &ParsedMention{Prompt: "fix it", Repository: "org/backend-api", Model: "opus"},
 		},
 
 		// --- Inline key=value ---
@@ -168,6 +200,86 @@ func TestParse(t *testing.T) {
 			botMention: "@cursor",
 			expected:   &ParsedMention{Prompt: "fix the thing", Repository: "org/repo", ForceNew: true},
 		},
+
+		// --- HITL flags ---
+		{
+			name:       "no-review flag",
+			message:    "@cursor --no-review fix the login bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the login bug", SkipReview: boolPtr(true)},
+		},
+		{
+			name:       "no-plan flag",
+			message:    "@cursor --no-plan fix the login bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the login bug", SkipPlan: boolPtr(true)},
+		},
+		{
+			name:       "direct flag",
+			message:    "@cursor --direct fix the login bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the login bug", Direct: true},
+		},
+		{
+			name:       "review=off inline",
+			message:    "@cursor review=off fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", SkipReview: boolPtr(true)},
+		},
+		{
+			name:       "review=on inline",
+			message:    "@cursor review=on fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", SkipReview: boolPtr(false)},
+		},
+		{
+			name:       "plan=off inline",
+			message:    "@cursor plan=off fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", SkipPlan: boolPtr(true)},
+		},
+		{
+			name:       "plan=on inline",
+			message:    "@cursor plan=on fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", SkipPlan: boolPtr(false)},
+		},
+		{
+			name:       "review=off plan=off same as direct",
+			message:    "@cursor review=off plan=off fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", SkipReview: boolPtr(true), SkipPlan: boolPtr(true)},
+		},
+		{
+			name:       "bracketed review and plan options",
+			message:    "@cursor [review=off, plan=off] fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", SkipReview: boolPtr(true), SkipPlan: boolPtr(true)},
+		},
+		{
+			name:       "direct flag with other options",
+			message:    "@cursor --direct repo=org/repo fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", Repository: "org/repo", Direct: true},
+		},
+		{
+			name:       "all flags combined",
+			message:    "@cursor --no-review --no-plan repo=org/repo fix it",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix it", Repository: "org/repo", SkipReview: boolPtr(true), SkipPlan: boolPtr(true)},
+		},
+		{
+			name:       "direct flag case insensitive",
+			message:    "@cursor --DIRECT fix the bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the bug", Direct: true},
+		},
+		{
+			name:       "agent prefix with direct flag",
+			message:    "@cursor agent --direct fix the thing",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the thing", ForceNew: true, Direct: true},
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +305,26 @@ func TestParse(t *testing.T) {
 						assert.Equal(t, *tt.expected.AutoPR, *result.AutoPR)
 					}
 				}
+				// SkipReview
+				if tt.expected.SkipReview == nil {
+					assert.Nil(t, result.SkipReview)
+				} else {
+					assert.NotNil(t, result.SkipReview)
+					if result.SkipReview != nil {
+						assert.Equal(t, *tt.expected.SkipReview, *result.SkipReview)
+					}
+				}
+				// SkipPlan
+				if tt.expected.SkipPlan == nil {
+					assert.Nil(t, result.SkipPlan)
+				} else {
+					assert.NotNil(t, result.SkipPlan)
+					if result.SkipPlan != nil {
+						assert.Equal(t, *tt.expected.SkipPlan, *result.SkipPlan)
+					}
+				}
+				// Direct
+				assert.Equal(t, tt.expected.Direct, result.Direct)
 			}
 		})
 	}

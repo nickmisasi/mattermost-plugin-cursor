@@ -105,7 +105,7 @@
       "jest-junit"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!react-native|react-router|mattermost-webapp|mattermost-redux|@mattermost)"
+      "node_modules/(?!react-native|react-router|mattermost-webapp|mattermost-redux|@mattermost|serialize-error)"
     ],
     "setupFiles": [
       "jest-canvas-mock"

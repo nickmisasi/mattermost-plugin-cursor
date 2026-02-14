@@ -84,6 +84,27 @@
                 "default": ""
             },
             {
+                "key": "EnableContextReview",
+                "display_name": "Enable Context Review (HITL)",
+                "type": "bool",
+                "help_text": "When enabled, the bot posts enriched context for user review before launching an agent. Users can approve, reject, or iterate on the context. Disable to skip this step and launch agents immediately.",
+                "default": "true"
+            },
+            {
+                "key": "EnablePlanLoop",
+                "display_name": "Enable Plan Loop (HITL)",
+                "type": "bool",
+                "help_text": "When enabled, a planning-only agent analyzes the codebase and produces an implementation plan for user review before the implementation agent is launched. Users can iterate on the plan. Disable to skip planning and go straight to implementation.",
+                "default": "true"
+            },
+            {
+                "key": "PlannerSystemPrompt",
+                "display_name": "Planner Agent System Prompt",
+                "type": "longtext",
+                "help_text": "Instructions for the planning-only agent that analyzes the codebase and produces an implementation plan. Leave blank to use the built-in default. The planner agent is instructed not to modify any code.",
+                "default": ""
+            },
+            {
                 "key": "EnableDebugLogging",
                 "display_name": "Enable Debug Logging",
                 "type": "bool",

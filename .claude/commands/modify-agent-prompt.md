@@ -1,3 +1,7 @@
+---
+description: "Understand and modify the agent prompt pipeline: parser, thread enrichment, system prompt wrapping, and the final Cursor API request."
+---
+
 # Modify the Agent Prompt Pipeline
 
 This skill explains how the prompt pipeline works from user message to Cursor API call, and how to modify each stage.

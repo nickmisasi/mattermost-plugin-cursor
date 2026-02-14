@@ -29,14 +29,27 @@ type ParsedMention struct {
 	// ForceNew is true when the user wrote "@cursor agent <prompt>",
 	// which means "always launch a new agent even in an existing thread".
 	ForceNew bool
+
+	// SkipReview is a pointer to a bool. nil means "use defaults".
+	// Extracted from "review=on|off" or "--no-review".
+	SkipReview *bool
+
+	// SkipPlan is a pointer to a bool. nil means "use defaults".
+	// Extracted from "plan=on|off" or "--no-plan".
+	SkipPlan *bool
+
+	// Direct is true when "--direct" flag is present, meaning skip both
+	// context review and plan loop (legacy fire-and-forget behavior).
+	Direct bool
 }
 
 var (
 	bracketedRe = regexp.MustCompile(`^\[([^\]]+)\]`)
-	inlineOptRe = regexp.MustCompile(`(?i)\b(repo|branch|model|autopr)=(\S+)`)
-	inRepoRe    = regexp.MustCompile(`(?i)\bin\s+([a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)\s*,?`)
+	inlineOptRe = regexp.MustCompile(`(?i)\b(repo|branch|model|autopr|review|plan)=(\S+)`)
+	inRepoRe    = regexp.MustCompile(`(?i)\bin\s+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)\s*,?`)
 	withModelRe = regexp.MustCompile(`(?i)\bwith\s+([a-zA-Z0-9._-]+)\s*,?`)
 	multiSpace  = regexp.MustCompile(`\s{2,}`)
+	flagRe      = regexp.MustCompile(`(?i)--(?:no-review|no-plan|direct)\b`)
 )
 
 // Parse extracts structured fields from a message that has already been
@@ -75,6 +88,9 @@ func Parse(message string, botMention string) *ParsedMention {
 		result.ForceNew = true
 		remainder = strings.TrimSpace(remainder[6:])
 	}
+
+	// Step 5b: Extract --flag options from the remainder.
+	remainder = extractFlags(remainder, result)
 
 	// Step 6: Extract bracketed options block: match `\[([^\]]+)\]` at the start.
 	if loc := bracketedRe.FindStringSubmatchIndex(remainder); loc != nil {
@@ -143,6 +159,29 @@ func extractInlineOptions(remainder string, result *ParsedMention) string {
 	return remainder
 }
 
+// extractFlags extracts --no-review, --no-plan, and --direct flags from the
+// remainder and returns the remainder with those flags removed.
+func extractFlags(remainder string, result *ParsedMention) string {
+	matches := flagRe.FindAllStringIndex(remainder, -1)
+	// Process in reverse order to maintain correct indices when removing.
+	for i := len(matches) - 1; i >= 0; i-- {
+		loc := matches[i]
+		flag := strings.ToLower(remainder[loc[0]:loc[1]])
+		switch flag {
+		case "--no-review":
+			b := true
+			result.SkipReview = &b
+		case "--no-plan":
+			b := true
+			result.SkipPlan = &b
+		case "--direct":
+			result.Direct = true
+		}
+		remainder = remainder[:loc[0]] + remainder[loc[1]:]
+	}
+	return remainder
+}
+
 // applyOption applies a key=value option to the ParsedMention.
 func applyOption(key, value string, result *ParsedMention) {
 	switch key {
@@ -155,5 +194,21 @@ func applyOption(key, value string, result *ParsedMention) {
 	case "autopr":
 		b := strings.EqualFold(value, "true")
 		result.AutoPR = &b
+	case "review":
+		if strings.EqualFold(value, "off") || strings.EqualFold(value, "false") {
+			b := true
+			result.SkipReview = &b
+		} else if strings.EqualFold(value, "on") || strings.EqualFold(value, "true") {
+			b := false
+			result.SkipReview = &b
+		}
+	case "plan":
+		if strings.EqualFold(value, "off") || strings.EqualFold(value, "false") {
+			b := true
+			result.SkipPlan = &b
+		} else if strings.EqualFold(value, "on") || strings.EqualFold(value, "true") {
+			b := false
+			result.SkipPlan = &b
+		}
 	}
 }

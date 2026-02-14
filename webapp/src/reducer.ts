@@ -6,12 +6,15 @@ import {
     AGENT_REMOVED,
     SELECT_AGENT,
     SET_LOADING,
+    WORKFLOW_RECEIVED,
+    WORKFLOW_PHASE_CHANGED,
 } from './actions';
 import type {PluginAction} from './actions';
 import type {Agent, PluginState} from './types';
 
 const initialState: PluginState = {
     agents: {},
+    workflows: {},
     selectedAgentId: null,
     isLoading: false,
 };
@@ -66,6 +69,31 @@ export default function reducer(state: PluginState = initialState, action: Plugi
         return {...state, selectedAgentId: action.data.agent_id};
     case SET_LOADING:
         return {...state, isLoading: action.data.isLoading};
+    case WORKFLOW_RECEIVED:
+        return {
+            ...state,
+            workflows: {...state.workflows, [action.data.id]: action.data},
+        };
+    case WORKFLOW_PHASE_CHANGED: {
+        const existing = state.workflows[action.data.workflow_id];
+        if (!existing) {
+            return state;
+        }
+        return {
+            ...state,
+            workflows: {
+                ...state.workflows,
+                [action.data.workflow_id]: {
+                    ...existing,
+                    phase: action.data.phase,
+                    planner_agent_id: action.data.planner_agent_id || existing.planner_agent_id,
+                    implementer_agent_id: action.data.implementer_agent_id || existing.implementer_agent_id,
+                    plan_iteration_count: action.data.plan_iteration_count,
+                    updated_at: action.data.updated_at,
+                },
+            },
+        };
+    }
     default:
         return state;
     }

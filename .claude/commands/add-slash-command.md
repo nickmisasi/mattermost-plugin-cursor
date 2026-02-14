@@ -1,3 +1,7 @@
+---
+description: "Walk through adding a new subcommand to the /cursor slash command system, including dispatch routing, handler implementation, autocomplete, help text, and tests."
+---
+
 # Add a New `/cursor` Subcommand
 
 This skill walks you through adding a new subcommand to the `/cursor` slash command system.

@@ -6,9 +6,11 @@ import {
     AGENT_REMOVED,
     SELECT_AGENT,
     SET_LOADING,
+    WORKFLOW_RECEIVED,
+    WORKFLOW_PHASE_CHANGED,
 } from './actions';
 import reducer from './reducer';
-import type {Agent, PluginState} from './types';
+import type {Agent, PluginState, Workflow} from './types';
 
 const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
     id: 'agent-1',
@@ -28,8 +30,33 @@ const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
     ...overrides,
 });
 
+const makeWorkflow = (overrides: Partial<Workflow> = {}): Workflow => ({
+    id: 'wf-1',
+    user_id: 'user-1',
+    channel_id: 'ch-1',
+    root_post_id: 'post-1',
+    phase: 'context_review',
+    repository: 'org/repo',
+    branch: 'main',
+    model: 'auto',
+    original_prompt: 'fix the bug',
+    enriched_context: 'The user reported...',
+    approved_context: '',
+    planner_agent_id: '',
+    retrieved_plan: '',
+    approved_plan: '',
+    plan_iteration_count: 0,
+    implementer_agent_id: '',
+    skip_context_review: false,
+    skip_plan_loop: false,
+    created_at: 1000,
+    updated_at: 1000,
+    ...overrides,
+});
+
 const initialState: PluginState = {
     agents: {},
+    workflows: {},
     selectedAgentId: null,
     isLoading: false,
 };
@@ -180,5 +207,103 @@ describe('reducer', () => {
             data: {isLoading: false},
         });
         expect(state2.isLoading).toBe(false);
+    });
+
+    it('handles WORKFLOW_RECEIVED', () => {
+        const workflow = makeWorkflow({id: 'wf-1'});
+        const state = reducer(initialState, {
+            type: WORKFLOW_RECEIVED,
+            data: workflow,
+        });
+        expect(state.workflows['wf-1']).toEqual(workflow);
+    });
+
+    it('WORKFLOW_RECEIVED adds to existing workflows', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_RECEIVED,
+            data: makeWorkflow({id: 'wf-2'}),
+        });
+        expect(Object.keys(state.workflows)).toHaveLength(2);
+    });
+
+    it('handles WORKFLOW_PHASE_CHANGED for existing workflow', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1', phase: 'context_review'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'wf-1',
+                phase: 'planning',
+                planner_agent_id: 'agent-p1',
+                implementer_agent_id: '',
+                plan_iteration_count: 1,
+                updated_at: 2000,
+            },
+        });
+        expect(state.workflows['wf-1'].phase).toBe('planning');
+        expect(state.workflows['wf-1'].planner_agent_id).toBe('agent-p1');
+        expect(state.workflows['wf-1'].plan_iteration_count).toBe(1);
+        expect(state.workflows['wf-1'].updated_at).toBe(2000);
+    });
+
+    it('WORKFLOW_PHASE_CHANGED ignores unknown workflow', () => {
+        const state = reducer(initialState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'unknown',
+                phase: 'planning',
+                planner_agent_id: '',
+                implementer_agent_id: '',
+                plan_iteration_count: 0,
+                updated_at: 2000,
+            },
+        });
+        expect(state).toEqual(initialState);
+    });
+
+    it('WORKFLOW_PHASE_CHANGED preserves existing planner_agent_id when new value is empty', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1', phase: 'planning', planner_agent_id: 'existing-agent'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'wf-1',
+                phase: 'plan_review',
+                planner_agent_id: '',
+                implementer_agent_id: '',
+                plan_iteration_count: 1,
+                updated_at: 3000,
+            },
+        });
+        expect(state.workflows['wf-1'].planner_agent_id).toBe('existing-agent');
+        expect(state.workflows['wf-1'].phase).toBe('plan_review');
+    });
+
+    it('WORKFLOW_PHASE_CHANGED sets implementer_agent_id on implementing phase', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1', phase: 'plan_review'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'wf-1',
+                phase: 'implementing',
+                planner_agent_id: '',
+                implementer_agent_id: 'impl-agent-1',
+                plan_iteration_count: 1,
+                updated_at: 4000,
+            },
+        });
+        expect(state.workflows['wf-1'].implementer_agent_id).toBe('impl-agent-1');
+        expect(state.workflows['wf-1'].phase).toBe('implementing');
     });
 });

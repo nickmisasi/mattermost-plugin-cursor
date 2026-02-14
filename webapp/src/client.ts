@@ -1,13 +1,14 @@
 import {Client4} from 'mattermost-redux/client';
 
 import manifest from './manifest';
-import type {Agent, AgentsResponse, FollowupRequest, StatusResponse} from './types';
+import type {Agent, AgentsResponse, FollowupRequest, StatusResponse, Workflow} from './types';
 
 const pluginApiBase = `/plugins/${manifest.id}/api/v1`;
 
 class ClientClass {
-    getAgents = async (): Promise<AgentsResponse> => {
-        const url = `${pluginApiBase}/agents`;
+    getAgents = async (archived?: boolean): Promise<AgentsResponse> => {
+        const params = archived ? '?archived=true' : '';
+        const url = `${pluginApiBase}/agents${params}`;
         const response = await fetch(url, Client4.getOptions({
             method: 'GET',
         }));
@@ -40,6 +41,28 @@ class ClientClass {
         return response.json();
     };
 
+    archiveAgent = async (agentId: string): Promise<StatusResponse> => {
+        const url = `${pluginApiBase}/agents/${encodeURIComponent(agentId)}/archive`;
+        const response = await fetch(url, Client4.getOptions({
+            method: 'POST',
+        }));
+        if (!response.ok) {
+            throw new Error(`POST /agents/${agentId}/archive failed: ${response.status}`);
+        }
+        return response.json();
+    };
+
+    unarchiveAgent = async (agentId: string): Promise<StatusResponse> => {
+        const url = `${pluginApiBase}/agents/${encodeURIComponent(agentId)}/unarchive`;
+        const response = await fetch(url, Client4.getOptions({
+            method: 'POST',
+        }));
+        if (!response.ok) {
+            throw new Error(`POST /agents/${agentId}/unarchive failed: ${response.status}`);
+        }
+        return response.json();
+    };
+
     cancelAgent = async (agentId: string): Promise<StatusResponse> => {
         const url = `${pluginApiBase}/agents/${encodeURIComponent(agentId)}`;
         const response = await fetch(url, Client4.getOptions({
@@ -47,6 +70,17 @@ class ClientClass {
         }));
         if (!response.ok) {
             throw new Error(`DELETE /agents/${agentId} failed: ${response.status}`);
+        }
+        return response.json();
+    };
+
+    getWorkflow = async (workflowId: string): Promise<Workflow> => {
+        const url = `${pluginApiBase}/workflows/${encodeURIComponent(workflowId)}`;
+        const response = await fetch(url, Client4.getOptions({
+            method: 'GET',
+        }));
+        if (!response.ok) {
+            throw new Error(`GET /workflows/${workflowId} failed: ${response.status}`);
         }
         return response.json();
     };

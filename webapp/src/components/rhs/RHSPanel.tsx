@@ -1,4 +1,4 @@
-import React, {useEffect} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useSelector, useDispatch} from 'react-redux';
 
 import AgentDetail from './AgentDetail';
@@ -14,10 +14,15 @@ const RHSPanel: React.FC = () => {
     const agents = useSelector(getAgentsList);
     const selectedAgent = useSelector(getSelectedAgent);
     const isLoading = useSelector(getIsLoading);
+    const [showArchived, setShowArchived] = useState(false);
 
     useEffect(() => {
-        dispatch(fetchAgents() as any);
-    }, [dispatch]);
+        dispatch(fetchAgents(showArchived ? true : undefined) as any);
+    }, [dispatch, showArchived]);
+
+    const handleTabChange = useCallback((archived: boolean) => {
+        setShowArchived(archived);
+    }, []);
 
     if (selectedAgent) {
         return (
@@ -33,6 +38,8 @@ const RHSPanel: React.FC = () => {
             agents={agents}
             isLoading={isLoading}
             onSelectAgent={(id) => dispatch(selectAgent(id) as any)}
+            showArchived={showArchived}
+            onTabChange={handleTabChange}
         />
     );
 };

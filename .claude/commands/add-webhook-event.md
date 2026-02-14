@@ -1,3 +1,7 @@
+---
+description: "Walk through adding support for a new GitHub webhook event type, including payload struct, event routing, handler implementation, and signed-payload tests."
+---
+
 # Handle a New GitHub Webhook Event Type
 
 This skill walks you through adding support for a new GitHub webhook event (e.g., `check_run`, `issue_comment`, `push`).

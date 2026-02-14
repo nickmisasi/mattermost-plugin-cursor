@@ -65,12 +65,37 @@ func (p *Plugin) handleSettingsDialogSubmission(w http.ResponseWriter, r *http.R
 		p.API.LogError("Failed to save channel settings", "error", err.Error())
 	}
 
-	// Save user settings.
-	err = p.kvstore.SaveUserSettings(userID, &kvstore.UserSettings{
+	// Extract HITL toggle fields.
+	userEnableContextReview, _ := request.Submission["user_enable_context_review"].(string)
+	userEnablePlanLoop, _ := request.Submission["user_enable_plan_loop"].(string)
+
+	userSettingsToSave := &kvstore.UserSettings{
 		DefaultRepository: userRepo,
 		DefaultBranch:     userBranch,
 		DefaultModel:      userModel,
-	})
+	}
+
+	switch userEnableContextReview {
+	case "true":
+		b := true
+		userSettingsToSave.EnableContextReview = &b
+	case "false":
+		b := false
+		userSettingsToSave.EnableContextReview = &b
+	}
+	// default: nil (use global default)
+
+	switch userEnablePlanLoop {
+	case "true":
+		b := true
+		userSettingsToSave.EnablePlanLoop = &b
+	case "false":
+		b := false
+		userSettingsToSave.EnablePlanLoop = &b
+	}
+
+	// Save user settings.
+	err = p.kvstore.SaveUserSettings(userID, userSettingsToSave)
 	if err != nil {
 		p.API.LogError("Failed to save user settings", "error", err.Error())
 	}

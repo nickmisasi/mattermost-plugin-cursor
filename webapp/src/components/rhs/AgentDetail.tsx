@@ -1,9 +1,15 @@
-import React, {useState} from 'react';
-import {useDispatch} from 'react-redux';
+import React, {useState, useEffect} from 'react';
+import {useDispatch, useSelector} from 'react-redux';
+import {useHistory} from 'react-router-dom';
 
-import {addFollowup, cancelAgent} from '../../actions';
+import type {GlobalState} from '@mattermost/types/store';
+
+import {addFollowup, cancelAgent, fetchWorkflow} from '../../actions';
+import {getWorkflowForAgent} from '../../selectors';
 import type {Agent} from '../../types';
 import ExternalLink from '../common/ExternalLink';
+import PhaseBadge from '../common/PhaseBadge';
+import PhaseProgress from '../common/PhaseProgress';
 import StatusBadge from '../common/StatusBadge';
 
 interface Props {
@@ -11,7 +17,26 @@ interface Props {
     onBack: () => void;
 }
 
-function getStatusBarClass(status: string): string {
+function getStatusBarClass(status: string, workflowPhase?: string): string {
+    // If in a workflow, use phase-based coloring
+    if (workflowPhase) {
+        switch (workflowPhase) {
+        case 'context_review':
+        case 'plan_review':
+            return 'cursor-agent-detail-status-bar--yellow';
+        case 'planning':
+        case 'implementing':
+            return 'cursor-agent-detail-status-bar--blue';
+        case 'rejected':
+            return 'cursor-agent-detail-status-bar--red';
+        case 'complete':
+            return 'cursor-agent-detail-status-bar--green';
+        default:
+            break;
+        }
+    }
+
+    // Fall back to agent status-based coloring
     switch (status) {
     case 'CREATING':
     case 'RUNNING':
@@ -21,7 +46,7 @@ function getStatusBarClass(status: string): string {
     case 'FAILED':
         return 'cursor-agent-detail-status-bar--red';
     case 'STOPPED':
-        return 'cursor-agent-detail-status-bar--grey';
+        return 'cursor-agent-detail-status-bar--yellow';
     default:
         return 'cursor-agent-detail-status-bar--grey';
     }
@@ -29,8 +54,17 @@ function getStatusBarClass(status: string): string {
 
 const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
     const dispatch = useDispatch();
+    const history = useHistory();
     const [followupText, setFollowupText] = useState('');
     const isActive = agent.status === 'RUNNING' || agent.status === 'CREATING';
+    const workflow = useSelector((state: GlobalState) => getWorkflowForAgent(state, agent.id));
+
+    // Fetch full workflow details on mount if we have a workflow_id but no workflow in state
+    useEffect(() => {
+        if (agent.workflow_id && !workflow) {
+            dispatch(fetchWorkflow(agent.workflow_id) as any);
+        }
+    }, [agent.workflow_id, workflow, dispatch]);
 
     const handleFollowup = () => {
         if (followupText.trim() && agent.status === 'RUNNING') {
@@ -47,101 +81,149 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
     return (
         <div className='cursor-agent-detail'>
-            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status)}`}/>
-            <div className='cursor-agent-detail-back'>
-                <button
-                    className='btn btn-link'
-                    onClick={onBack}
-                >
-                    {'< Back to list'}
-                </button>
-            </div>
-
-            <div className='cursor-agent-detail-header'>
-                <StatusBadge status={agent.status}/>
-                <span className='cursor-agent-detail-status-text'>{agent.status}</span>
-            </div>
-
-            <div className='cursor-agent-detail-section'>
-                <div className='cursor-agent-detail-label'>{'Repository'}</div>
-                <div className='cursor-agent-detail-value'>{agent.repository}</div>
-            </div>
-
-            {agent.branch && (
-                <div className='cursor-agent-detail-section'>
-                    <div className='cursor-agent-detail-label'>{'Branch'}</div>
-                    <div className='cursor-agent-detail-value'>{agent.branch}</div>
-                </div>
-            )}
-
-            {agent.model && (
-                <div className='cursor-agent-detail-section'>
-                    <div className='cursor-agent-detail-label'>{'Model'}</div>
-                    <div className='cursor-agent-detail-value'>{agent.model}</div>
-                </div>
-            )}
-
-            {agent.prompt && (
-                <div className='cursor-agent-detail-section'>
-                    <div className='cursor-agent-detail-label'>{'Prompt'}</div>
-                    <div className='cursor-agent-detail-value'>{agent.prompt}</div>
-                </div>
-            )}
-
-            {agent.summary && (
-                <div className='cursor-agent-detail-section'>
-                    <div className='cursor-agent-detail-label'>{'Summary'}</div>
-                    <div className='cursor-agent-detail-value'>{agent.summary}</div>
-                </div>
-            )}
-
-            <div className='cursor-agent-detail-links'>
-                {agent.cursor_url && (
-                    <ExternalLink
-                        href={agent.cursor_url}
-                        className='btn btn-tertiary'
-                    >
-                        {'Open in Cursor'}
-                    </ExternalLink>
-                )}
-                {agent.pr_url && (
-                    <ExternalLink
-                        href={agent.pr_url}
-                        className='btn btn-primary'
-                    >
-                        {'View Pull Request'}
-                    </ExternalLink>
-                )}
-            </div>
-
-            {agent.status === 'RUNNING' && (
-                <div className='cursor-agent-detail-followup'>
-                    <div className='cursor-agent-detail-label'>{'Send Follow-up'}</div>
-                    <textarea
-                        className='cursor-textarea'
-                        placeholder='Enter follow-up instructions...'
-                        value={followupText}
-                        onChange={(e) => setFollowupText(e.target.value)}
-                        rows={3}
-                    />
+            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status, workflow?.phase)}`}/>
+            <div className='cursor-agent-detail-content'>
+                <div className='cursor-agent-detail-back'>
                     <button
-                        className='btn btn-primary'
-                        onClick={handleFollowup}
-                        disabled={!followupText.trim()}
+                        className='btn btn-link'
+                        onClick={onBack}
                     >
-                        {'Send'}
+                        {'< Back to list'}
                     </button>
                 </div>
-            )}
+
+                {workflow && (
+                    <PhaseProgress
+                        phase={workflow.phase}
+                        planIterationCount={workflow.plan_iteration_count}
+                        skipContextReview={workflow.skip_context_review}
+                        skipPlanLoop={workflow.skip_plan_loop}
+                    />
+                )}
+
+                <div className='cursor-agent-detail-header'>
+                    <StatusBadge status={agent.status}/>
+                    <span className='cursor-agent-detail-status-text'>{agent.status}</span>
+                    {workflow && <PhaseBadge phase={workflow.phase}/>}
+                </div>
+
+                <div className='cursor-agent-detail-section'>
+                    <div className='cursor-agent-detail-label'>{'Repository'}</div>
+                    <div className='cursor-agent-detail-value'>{agent.repository}</div>
+                </div>
+
+                {agent.branch && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Branch'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.branch}</div>
+                    </div>
+                )}
+
+                {agent.model && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Model'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.model}</div>
+                    </div>
+                )}
+
+                {agent.prompt && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Prompt'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.prompt}</div>
+                    </div>
+                )}
+
+                {workflow?.enriched_context && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Enriched Context'}</div>
+                        <div className='cursor-agent-detail-context'>{workflow.enriched_context}</div>
+                    </div>
+                )}
+
+                {workflow?.retrieved_plan && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>
+                            {workflow.plan_iteration_count > 1 ?
+                                `Implementation Plan (v${workflow.plan_iteration_count})` :
+                                'Implementation Plan'
+                            }
+                        </div>
+                        <div className='cursor-agent-detail-plan'>{workflow.retrieved_plan}</div>
+                    </div>
+                )}
+
+                {agent.summary && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Summary'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.summary}</div>
+                    </div>
+                )}
+
+                <div className='cursor-agent-detail-links'>
+                    {agent.root_post_id && (
+                        <a
+                            href={`/${window.location.pathname.split('/')[1]}/pl/${agent.root_post_id}`}
+                            className='btn btn-tertiary'
+                            onClick={(e) => {
+                                e.preventDefault();
+                                const teamName = window.location.pathname.split('/')[1];
+                                history.push(`/${teamName}/pl/${agent.root_post_id}`);
+                            }}
+                        >
+                            {'View Thread'}
+                        </a>
+                    )}
+                    {agent.cursor_url && (
+                        <ExternalLink
+                            href={agent.cursor_url}
+                            className='btn btn-tertiary'
+                        >
+                            {'Open in Cursor'}
+                        </ExternalLink>
+                    )}
+                    {agent.pr_url && (
+                        <ExternalLink
+                            href={agent.pr_url}
+                            className='btn btn-primary'
+                        >
+                            {'View Pull Request'}
+                        </ExternalLink>
+                    )}
+                </div>
+            </div>
 
             {isActive && (
-                <div className='cursor-agent-detail-cancel'>
-                    <button
-                        className='btn btn-danger'
-                        onClick={handleCancel}
-                    >
-                        {'Cancel Agent'}
-                    </button>
+                <div className='cursor-agent-detail-actions'>
+                    {agent.status === 'RUNNING' && (
+                        <div className='cursor-agent-detail-followup'>
+                            <div className='cursor-agent-detail-label'>{'Send Follow-up'}</div>
+                            <textarea
+                                className='cursor-textarea'
+                                placeholder='Enter follow-up instructions...'
+                                value={followupText}
+                                onChange={(e) => setFollowupText(e.target.value)}
+                                rows={3}
+                            />
+                            <button
+                                className='btn btn-primary'
+                                onClick={handleFollowup}
+                                disabled={!followupText.trim()}
+                            >
+                                {'Send'}
+                            </button>
+                        </div>
+                    )}
+
+                    {isActive && (
+                        <div className='cursor-agent-detail-cancel'>
+                            <button
+                                className='btn btn-danger'
+                                onClick={handleCancel}
+                            >
+                                {'Cancel Agent'}
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

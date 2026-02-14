@@ -56,7 +56,7 @@ type Source struct {
 type Target struct {
 	BranchName            string `json:"branchName,omitempty"`
 	AutoCreatePr          bool   `json:"autoCreatePr,omitempty"`
-	AutoBranch            bool   `json:"autoBranch,omitempty"`
+	AutoBranch            bool   `json:"autoBranch"`
 	OpenAsCursorGithubApp bool   `json:"openAsCursorGithubApp,omitempty"`
 	SkipReviewerRequest   bool   `json:"skipReviewerRequest,omitempty"`
 }

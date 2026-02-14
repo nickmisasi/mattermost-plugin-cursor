@@ -1,3 +1,7 @@
+---
+description: "Walk through adding a new entity type to the KV store, including struct definition, interface methods, key prefixes, implementation, tests, and mock updates."
+---
+
 # Add a New Entity Type to the KV Store
 
 This skill walks you through adding a new entity type to the plugin's KV store layer.

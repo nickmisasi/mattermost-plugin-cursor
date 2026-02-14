@@ -51,6 +51,8 @@ All KV keys use a prefix to namespace data:
 | `prurlidx:` | `prurlidx:{normalizedPRURL}` | PR URL -> agent ID lookup |
 | `branchidx:` | `branchidx:{branchName}` | Branch name -> agent ID lookup |
 | `ghdelivery:` | `ghdelivery:{deliveryID}` | GitHub webhook deduplication (24h TTL) |
+| `hitl:` | `hitl:{workflowID}` | HITL workflow record |
+| `hitlagent:` | `hitlagent:{cursorAgentID}` | Reverse index: Cursor agent -> workflow ID |
 
 ## AgentRecord Fields
 
@@ -73,6 +75,49 @@ type AgentRecord struct {
     UpdatedAt     int64   // Unix milliseconds
 }
 ```
+
+## Thread-to-Agent Mapping (Overloaded for HITL)
+
+The `thread:` prefix now stores either:
+- A bare agent ID (legacy): `thread:post123` -> `agent-uuid-456`
+- A workflow reference: `thread:post123` -> `hitl:workflow-uuid-789`
+
+The `GetWorkflowByThread(rootPostID)` convenience method reads the thread mapping, checks for the `hitl:` prefix, strips it, and returns the workflow.
+
+## HITLWorkflow Fields
+
+```go
+type HITLWorkflow struct {
+    ID                 string     // UUID primary key
+    UserID             string     // Initiating user
+    ChannelID          string
+    RootPostID         string     // Thread root
+    TriggerPostID      string     // @mention post
+    Phase              string     // Phase constant (see below)
+    Repository         string     // Resolved repo
+    Branch             string     // Resolved branch
+    Model              string     // Resolved model
+    AutoCreatePR       bool
+    OriginalPrompt     string     // Raw user prompt
+    EnrichedContext    string     // Bridge client output
+    ApprovedContext    string     // Finalized after approval
+    ContextPostID      string     // Post with Accept/Reject buttons
+    ContextImages      []ImageRef // Serializable image references
+    PlannerAgentID     string     // Current planner Cursor agent
+    RetrievedPlan      string     // Plan text from conversation
+    ApprovedPlan       string     // Finalized after approval
+    PlanPostID         string     // Post with Accept/Reject buttons
+    PlanIterationCount int        // Track iterations
+    ImplementerAgentID string     // Implementation Cursor agent
+    SkipContextReview  bool       // Per-workflow override
+    SkipPlanLoop       bool       // Per-workflow override
+    PendingFeedback    string     // Queued feedback during planning phase
+    CreatedAt          int64      // Unix millis
+    UpdatedAt          int64      // Unix millis
+}
+```
+
+Phase constants: `context_review`, `planning`, `plan_review`, `implementing`, `rejected`, `complete`.
 
 ## Active Agent Indexing
 
@@ -111,8 +156,11 @@ When adding a new method to `KVStore`:
 2. Implement it in `kvstore/store.go`
 3. Add tests in `kvstore/store_test.go`
 4. **Update mock implementations in ALL test files**:
-   - `server/command/command_test.go` (`mockKVStore` struct)
+   - `server/testhelpers_test.go` (`mockKVStore` struct used by handlers, hitl, dialog, api, poller, webhook tests)
+   - `server/command/command_test.go` (`mockKVStore` struct used by command tests)
    - Any new test files that mock `KVStore`
+
+When adding HITL-related KV methods, the same mock update pattern applies.
 
 ## Common Pitfalls
 

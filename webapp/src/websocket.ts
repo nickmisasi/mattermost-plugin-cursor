@@ -4,9 +4,9 @@ import type {GlobalState} from '@mattermost/types/store';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
-import {websocketAgentStatusChange, websocketAgentCreated} from './actions';
+import {websocketAgentStatusChange, websocketAgentCreated, websocketWorkflowPhaseChange} from './actions';
 import manifest from './manifest';
-import type {AgentStatusChangeEvent, AgentCreatedEvent} from './types';
+import type {AgentStatusChangeEvent, AgentCreatedEvent, WorkflowPhaseChangeEvent} from './types';
 
 export function registerWebSocketHandlers(
     registry: PluginRegistry,
@@ -23,6 +23,13 @@ export function registerWebSocketHandlers(
         'custom_' + manifest.id + '_agent_created',
         (msg: {data: AgentCreatedEvent}) => {
             store.dispatch(websocketAgentCreated(msg.data) as any);
+        },
+    );
+
+    registry.registerWebSocketEventHandler(
+        'custom_' + manifest.id + '_workflow_phase_change',
+        (msg: {data: WorkflowPhaseChangeEvent}) => {
+            store.dispatch(websocketWorkflowPhaseChange(msg.data) as any);
         },
     );
 }

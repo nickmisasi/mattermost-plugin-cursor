@@ -25,6 +25,9 @@ type configuration struct {
 	GitHubWebhookSecret     string `json:"GitHubWebhookSecret"`
 	CursorAgentSystemPrompt string `json:"CursorAgentSystemPrompt"`
 	EnableDebugLogging      bool   `json:"EnableDebugLogging"`
+	EnableContextReview     bool   `json:"EnableContextReview"`
+	EnablePlanLoop          bool   `json:"EnablePlanLoop"`
+	PlannerSystemPrompt     string `json:"PlannerSystemPrompt"`
 }
 
 // Clone shallow copies the configuration.
