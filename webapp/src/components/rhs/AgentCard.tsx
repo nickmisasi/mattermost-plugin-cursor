@@ -1,12 +1,16 @@
 import React from 'react';
+import {useHistory} from 'react-router-dom';
 
 import type {Agent} from '../../types';
 import ExternalLink from '../common/ExternalLink';
+import PhaseBadge from '../common/PhaseBadge';
 import StatusBadge from '../common/StatusBadge';
 
 interface Props {
     agent: Agent;
     onClick: () => void;
+    onArchive?: (e: React.MouseEvent) => void;
+    onUnarchive?: (e: React.MouseEvent) => void;
 }
 
 function getElapsedTime(createdAt: number): string {
@@ -26,7 +30,8 @@ function getElapsedTime(createdAt: number): string {
     return `${days}d ago`;
 }
 
-const AgentCard: React.FC<Props> = ({agent, onClick}) => {
+const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) => {
+    const history = useHistory();
     const elapsed = getElapsedTime(agent.created_at);
     const repoShort = agent.repository.split('/').slice(-2).join('/');
     const promptPreview = agent.prompt && agent.prompt.length > 80 ?
@@ -49,6 +54,9 @@ const AgentCard: React.FC<Props> = ({agent, onClick}) => {
             <div className='cursor-agent-card-header'>
                 <StatusBadge status={agent.status}/>
                 <span className='cursor-agent-card-repo'>{repoShort}</span>
+                {agent.workflow_phase && (
+                    <PhaseBadge phase={agent.workflow_phase}/>
+                )}
                 <span className='cursor-agent-card-time'>{elapsed}</span>
             </div>
             {(agent.branch || agent.model) && (
@@ -64,28 +72,58 @@ const AgentCard: React.FC<Props> = ({agent, onClick}) => {
             {promptPreview && (
                 <div className='cursor-agent-card-prompt'>{promptPreview}</div>
             )}
-            {(agent.pr_url || agent.cursor_url) && (
-                <div className='cursor-agent-card-links'>
-                    {agent.pr_url && (
-                        <ExternalLink
-                            className='cursor-agent-card-link'
-                            href={agent.pr_url}
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            {'View PR'}
-                        </ExternalLink>
-                    )}
-                    {agent.cursor_url && (
-                        <ExternalLink
-                            className='cursor-agent-card-link'
-                            href={agent.cursor_url}
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            {'Open in Cursor'}
-                        </ExternalLink>
-                    )}
-                </div>
-            )}
+            <div className='cursor-agent-card-links'>
+                {agent.root_post_id && (
+                    <a
+                        className='cursor-agent-card-link'
+                        href={`/${window.location.pathname.split('/')[1]}/pl/${agent.root_post_id}`}
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const teamName = window.location.pathname.split('/')[1];
+                            history.push(`/${teamName}/pl/${agent.root_post_id}`);
+                        }}
+                    >
+                        {'View Thread'}
+                    </a>
+                )}
+                {agent.pr_url && (
+                    <ExternalLink
+                        className='cursor-agent-card-link'
+                        href={agent.pr_url}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {'View PR'}
+                    </ExternalLink>
+                )}
+                {agent.cursor_url && (
+                    <ExternalLink
+                        className='cursor-agent-card-link'
+                        href={agent.cursor_url}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {'Open in Cursor'}
+                    </ExternalLink>
+                )}
+                {onArchive && (
+                    <button
+                        className='cursor-agent-card-archive-btn'
+                        onClick={onArchive}
+                        title='Archive agent'
+                    >
+                        {'Archive'}
+                    </button>
+                )}
+                {onUnarchive && (
+                    <button
+                        className='cursor-agent-card-archive-btn'
+                        onClick={onUnarchive}
+                        title='Unarchive agent'
+                    >
+                        {'Unarchive'}
+                    </button>
+                )}
+            </div>
         </div>
     );
 };

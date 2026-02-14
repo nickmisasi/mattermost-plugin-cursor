@@ -32,7 +32,9 @@ server/
   cursor/client.go   # Cursor API HTTP client (interface-based)
   cursor/types.go    # Cursor API request/response types
   parser/parser.go   # @cursor mention parser (repo, branch, model, prompt extraction)
-  store/kvstore/     # KV store interface + implementation
+  hitl.go            # HITL workflow orchestration functions
+  store/kvstore/     # KV store interface + implementation (includes HITL workflow storage)
+  attachments/       # Slack-style attachment builders (includes HITL context/plan review)
 
 webapp/src/
   index.tsx           # Plugin registration (reducer, RHS, app bar, post actions, WS handlers)
@@ -97,6 +99,48 @@ Settings resolve in priority order: parsed mention > channel settings > user set
 ### WebSocket Events
 Server publishes `agent_status_change` and `agent_created` events. The full event name is `custom_com.mattermost.plugin-cursor_<event_name>`.
 
+## HITL Workflow
+
+### Overview
+The HITL (Human-In-The-Loop) feature adds two optional verification stages before agent implementation:
+1. **Context Review** (`context_review`): Bot posts enriched context for user approval
+2. **Plan Loop** (`planning` -> `plan_review`): Planner agent produces implementation plan for user approval
+
+Both stages are independently togglable via global config (`EnableContextReview`, `EnablePlanLoop`), user settings, or per-mention flags (`--no-review`, `--no-plan`, `--direct`).
+
+### Phase Constants
+- `context_review` -- Waiting for user to approve enriched context
+- `planning` -- Planner Cursor agent is running
+- `plan_review` -- Waiting for user to approve plan
+- `implementing` -- Implementation Cursor agent is running
+- `rejected` -- User rejected at any stage
+- `complete` -- Implementation finished
+
+### Key Files
+- `server/hitl.go` -- Workflow orchestration functions
+- `server/store/kvstore/kvstore.go` -- `HITLWorkflow` struct, phase constants, KV interface
+- `server/attachments/attachments.go` -- HITL-specific attachment builders
+- `server/api.go` -- `POST /api/v1/actions/hitl-response` button handler
+
+### Thread Mapping Convention
+The `thread:` KV prefix stores either:
+- A bare Cursor agent ID (legacy fire-and-forget flow)
+- A value starting with `hitl:` prefix (HITL workflow ID)
+
+Code that reads `GetAgentIDByThread` must check for the `hitl:` prefix to distinguish workflows from direct agents.
+
+### Configuration Resolution
+HITL flags resolve in priority order: per-mention flags > user settings > global config.
+- `--direct` skips both HITL stages
+- `--no-review` skips context review only
+- `--no-plan` skips plan loop only
+
+### Planner Agent Constraints
+- `autoCreatePr: false` -- planner should NOT create PRs
+- `autoBranch: false` -- prevents orphan branch creation per iteration
+- Strong "DO NOT MODIFY CODE" system prompt
+- Plan extracted from LAST `assistant_message` in conversation API response
+
 ## Common Pitfalls
 
 - **No backticks in plugin.json help_text**: Mattermost's System Console chokes on backtick characters in settings help text. Use plain descriptions instead.
@@ -106,6 +150,11 @@ Server publishes `agent_status_change` and `agent_created` events. The full even
 - **setConfiguration panic**: Calling `setConfiguration` with the same pointer panics. Always pass a new/cloned struct.
 - **Mock interface updates**: When the `kvstore.KVStore` interface changes, mock implementations must be updated in ALL test files that use them (see `server/store/kvstore/CLAUDE.md`).
 - **Webpack externals**: React, Redux, ReactRedux, ReactDOM are provided by the Mattermost host app. Do not bundle them.
+- **Thread mapping prefix**: Values from `GetAgentIDByThread` starting with `hitl:` are workflow IDs, not agent IDs. Always check the prefix before using as an agent ID.
+- **Plan iteration creates NEW agents**: Follow-ups only work on RUNNING agents. Since planners FINISH, iteration requires creating a new planner agent with accumulated context.
+- **autoBranch: false for planners**: The Cursor API defaults `autoBranch: true`, creating orphan branches. Always set `autoBranch: false` in planner launch requests.
+- **PendingFeedback field**: Thread replies during `planning` phase are queued in `HITLWorkflow.PendingFeedback`. They auto-trigger a new planner iteration when the current planner finishes.
+- **AddReaction mock returns**: When mocking `AddReaction` in command tests (which use `pluginapi.Client`), always return `&model.Reaction{}` not `nil` -- `pluginapi.PostService.AddReaction` dereferences the result.
 
 ## Skills
 

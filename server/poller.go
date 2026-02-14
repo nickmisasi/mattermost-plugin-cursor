@@ -79,16 +79,24 @@ func (p *Plugin) pollSingleAgent(record *kvstore.AgentRecord) {
 		"to", newStatus,
 	)
 
-	// Step 3: Handle status transitions.
-	switch agent.Status {
-	case cursor.AgentStatusRunning:
-		p.handleAgentRunning(record)
-	case cursor.AgentStatusFinished:
-		p.handleAgentFinished(record, agent)
-	case cursor.AgentStatusFailed:
-		p.handleAgentFailed(record, agent)
-	case cursor.AgentStatusStopped:
-		p.handleAgentStopped(record)
+	// Step 3: Check if this agent belongs to a HITL workflow (planners skip normal handling).
+	handledByWorkflow := false
+	if agent.Status.IsTerminal() {
+		handledByWorkflow = p.handleWorkflowAgentTerminal(record, agent)
+	}
+
+	// Step 3b: Normal terminal handling (only if not handled by workflow planner).
+	if !handledByWorkflow {
+		switch agent.Status {
+		case cursor.AgentStatusRunning:
+			p.handleAgentRunning(record)
+		case cursor.AgentStatusFinished:
+			p.handleAgentFinished(record, agent)
+		case cursor.AgentStatusFailed:
+			p.handleAgentFailed(record, agent)
+		case cursor.AgentStatusStopped:
+			p.handleAgentStopped(record)
+		}
 	}
 
 	// Step 4: Update stored status.
@@ -266,6 +274,40 @@ func (p *Plugin) publishAgentStatusChange(record *kvstore.AgentRecord) {
 		},
 		&model.WebsocketBroadcast{UserId: record.UserID},
 	)
+}
+
+// handleWorkflowAgentTerminal checks if a terminal agent belongs to a HITL workflow
+// and routes accordingly. Returns true if the agent was handled as a planner
+// (meaning normal terminal handling should be skipped).
+func (p *Plugin) handleWorkflowAgentTerminal(record *kvstore.AgentRecord, agent *cursor.Agent) bool {
+	workflowID, err := p.kvstore.GetWorkflowByAgent(record.CursorAgentID)
+	if err != nil || workflowID == "" {
+		return false
+	}
+
+	workflow, err := p.kvstore.GetWorkflow(workflowID)
+	if err != nil || workflow == nil {
+		return false
+	}
+
+	switch workflow.Phase {
+	case kvstore.PhasePlanning:
+		// Planner agent finished -- extract plan and present for review.
+		p.handlePlannerFinished(workflow, agent)
+		return true // Skip normal terminal handling.
+
+	case kvstore.PhaseImplementing:
+		// Implementation agent finished/failed/stopped -- mark workflow complete.
+		workflow.Phase = kvstore.PhaseComplete
+		workflow.UpdatedAt = time.Now().UnixMilli()
+		if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+			p.API.LogError("Failed to save workflow in implementing phase", "workflow_id", workflow.ID, "error", err.Error())
+		}
+		p.publishWorkflowPhaseChange(workflow)
+		return false // Let normal terminal handling run (PR link, reactions, etc.)
+	}
+
+	return false
 }
 
 // publishAgentCreated publishes a WebSocket event when a new agent is created.

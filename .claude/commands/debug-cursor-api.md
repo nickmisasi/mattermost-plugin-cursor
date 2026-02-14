@@ -1,3 +1,7 @@
+---
+description: "Investigate and resolve Cursor API issues: enable debug logging, interpret log output, diagnose common HTTP errors, test with curl, and check plugin health."
+---
+
 # Debug Cursor API Issues
 
 This skill covers how to investigate and resolve issues with the Cursor Background Agents API.

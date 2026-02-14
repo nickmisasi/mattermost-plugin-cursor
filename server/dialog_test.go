@@ -215,3 +215,78 @@ func TestSettingsDialog_InvalidUserRepo(t *testing.T) {
 	_ = json.NewDecoder(result.Body).Decode(&resp)
 	assert.Contains(t, resp.Errors, "user_default_repo")
 }
+
+func TestSettingsDialog_SavesHITLSettings(t *testing.T) {
+	p, api, store := setupDialogTestPlugin(t)
+
+	submission := model.SubmitDialogRequest{
+		UserId: "user-1",
+		State:  "ch-1|user-1",
+		Submission: map[string]any{
+			"channel_default_repo":       "",
+			"channel_default_branch":     "",
+			"user_default_repo":          "org/repo",
+			"user_default_branch":        "main",
+			"user_default_model":         "auto",
+			"user_enable_context_review": "true",
+			"user_enable_plan_loop":      "false",
+		},
+	}
+
+	store.On("SaveChannelSettings", "ch-1", mock.Anything).Return(nil)
+	store.On("SaveUserSettings", "user-1", mock.MatchedBy(func(s *kvstore.UserSettings) bool {
+		return s.DefaultRepository == "org/repo" &&
+			s.EnableContextReview != nil && *s.EnableContextReview == true &&
+			s.EnablePlanLoop != nil && *s.EnablePlanLoop == false
+	})).Return(nil)
+	api.On("SendEphemeralPost", "user-1", mock.Anything).Return(&model.Post{})
+
+	body, _ := json.Marshal(submission)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/dialog/settings", bytes.NewReader(body))
+	r.Header.Set("Mattermost-User-ID", "user-1")
+
+	p.ServeHTTP(nil, w, r)
+
+	result := w.Result()
+	defer func() { _ = result.Body.Close() }()
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+
+	store.AssertExpectations(t)
+}
+
+func TestSettingsDialog_NilHITLSettings_NoOverride(t *testing.T) {
+	p, api, store := setupDialogTestPlugin(t)
+
+	submission := model.SubmitDialogRequest{
+		UserId: "user-1",
+		State:  "ch-1|user-1",
+		Submission: map[string]any{
+			"channel_default_repo":   "",
+			"channel_default_branch": "",
+			"user_default_repo":      "",
+			"user_default_branch":    "",
+			"user_default_model":     "",
+			// No HITL fields submitted -- should result in nil pointers.
+		},
+	}
+
+	store.On("SaveChannelSettings", "ch-1", mock.Anything).Return(nil)
+	store.On("SaveUserSettings", "user-1", mock.MatchedBy(func(s *kvstore.UserSettings) bool {
+		return s.EnableContextReview == nil && s.EnablePlanLoop == nil
+	})).Return(nil)
+	api.On("SendEphemeralPost", "user-1", mock.Anything).Return(&model.Post{})
+
+	body, _ := json.Marshal(submission)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/dialog/settings", bytes.NewReader(body))
+	r.Header.Set("Mattermost-User-ID", "user-1")
+
+	p.ServeHTTP(nil, w, r)
+
+	result := w.Result()
+	defer func() { _ = result.Body.Close() }()
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+
+	store.AssertExpectations(t)
+}

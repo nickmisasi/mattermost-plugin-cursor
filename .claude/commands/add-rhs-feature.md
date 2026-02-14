@@ -1,3 +1,7 @@
+---
+description: "Walk through adding a new feature to the webapp RHS panel, including types, actions, reducer, selectors, components, CSS, and WebSocket event handling."
+---
+
 # Add a New Feature to the Webapp RHS Panel
 
 This skill walks you through adding a new feature to the right-hand sidebar (RHS) panel in the webapp.

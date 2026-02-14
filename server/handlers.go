@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mattermost/mattermost-plugin-ai/public/bridgeclient"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -99,14 +100,20 @@ func containsMention(message, botMention string) bool {
 	return strings.Contains(strings.ToLower(message), strings.ToLower(botMention))
 }
 
-// handlePossibleFollowUp handles non-mention thread replies that might be follow-ups.
+// handlePossibleFollowUp handles non-mention thread replies that might be follow-ups
+// or HITL workflow iterations.
 func (p *Plugin) handlePossibleFollowUp(post *model.Post) {
 	// Only process thread replies (posts with a RootId).
 	if post.RootId == "" {
 		return
 	}
 
-	// Look up thread -> agent mapping.
+	// Check for HITL workflow first.
+	if p.handlePossibleWorkflowReply(post) {
+		return // Handled as a workflow reply.
+	}
+
+	// Fall through to agent follow-up.
 	agentRecord, err := p.getThreadAgentRecord(post.RootId)
 	if err != nil || agentRecord == nil {
 		return // Not an agent thread; ignore.
@@ -122,6 +129,26 @@ func (p *Plugin) handlePossibleFollowUp(post *model.Post) {
 
 // handleMentionInThread handles @cursor mentions within an existing thread.
 func (p *Plugin) handleMentionInThread(post *model.Post, parsed *parser.ParsedMention) {
+	// Check for active HITL workflow first.
+	workflow, _ := p.kvstore.GetWorkflowByThread(post.RootId)
+	if workflow != nil && workflow.Phase != kvstore.PhaseRejected && workflow.Phase != kvstore.PhaseComplete {
+		// Active workflow exists. If in a review phase, treat the mention as iteration feedback.
+		if workflow.Phase == kvstore.PhaseContextReview && workflow.UserID == post.UserId {
+			p.iterateContext(workflow, parsed.Prompt, post)
+			return
+		}
+		if workflow.Phase == kvstore.PhasePlanReview && workflow.UserID == post.UserId {
+			p.iteratePlan(workflow, parsed.Prompt)
+			return
+		}
+		// If planning, ignore the mention (planner is running).
+		if workflow.Phase == kvstore.PhasePlanning {
+			p.postBotReply(post, "A planning agent is currently running. Please wait for the plan to be ready for review.")
+			return
+		}
+		// If implementing, fall through to the agent check below.
+	}
+
 	agentRecord, err := p.getThreadAgentRecord(post.RootId)
 	if err != nil || agentRecord == nil {
 		// No agent in this thread -- launch a new one.
@@ -190,6 +217,56 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 		"prompt_preview", debugPrompt,
 		"image_count", len(promptImages),
 	)
+
+	// Step 4b: Check if HITL context review is enabled.
+	skipReview, skipPlan := p.resolveHITLFlags(parsed, post.UserId)
+	if !skipReview {
+		// Build image references for KV storage (not full base64).
+		imageRefs := p.buildImageRefs(post)
+
+		// Start context review flow. This posts the review attachment and returns.
+		// The agent will not be launched until the user approves.
+		p.startContextReview(post, parsed, repo, branch, modelName, autoCreatePR, promptText, imageRefs, skipPlan)
+		return
+	}
+
+	// If context review is skipped but plan loop is enabled, create a workflow for the plan loop.
+	if !skipPlan {
+		rootID := post.Id
+		if post.RootId != "" {
+			rootID = post.RootId
+		}
+
+		now := time.Now().UnixMilli()
+		workflow := &kvstore.HITLWorkflow{
+			ID:                uuid.New().String(),
+			UserID:            post.UserId,
+			ChannelID:         post.ChannelId,
+			RootPostID:        rootID,
+			TriggerPostID:     post.Id,
+			Phase:             kvstore.PhasePlanning,
+			Repository:        repo,
+			Branch:            branch,
+			Model:             modelName,
+			AutoCreatePR:      autoCreatePR,
+			OriginalPrompt:    parsed.Prompt,
+			ApprovedContext:   promptText, // Use enriched prompt as approved context
+			SkipContextReview: true,
+			SkipPlanLoop:      false,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		}
+		if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+			p.API.LogError("Failed to save HITL workflow for plan loop", "error", err.Error())
+			// Fall through to direct launch.
+		} else {
+			if err := p.kvstore.SetThreadWorkflow(rootID, workflow.ID); err != nil {
+				p.API.LogError("Failed to set thread workflow mapping", "error", err.Error())
+			}
+			p.startPlanLoop(workflow)
+			return
+		}
+	}
 
 	// Step 5: Wrap prompt with system instructions for the Cursor agent.
 	promptText = p.wrapPromptWithSystemInstructions(promptText)

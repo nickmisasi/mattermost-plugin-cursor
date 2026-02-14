@@ -1,10 +1,10 @@
 import type {GlobalState} from '@mattermost/types/store';
 
 import manifest from './manifest';
-import type {Agent, PluginState} from './types';
+import type {Agent, PluginState, Workflow} from './types';
 
 const getPluginState = (state: GlobalState): PluginState => {
-    return (state as any)['plugins-' + manifest.id] || {agents: {}, selectedAgentId: null, isLoading: false};
+    return (state as any)['plugins-' + manifest.id] || {agents: {}, workflows: {}, selectedAgentId: null, isLoading: false};
 };
 
 export const getAgents = (state: GlobalState): Record<string, Agent> => {
@@ -40,4 +40,19 @@ export const getIsLoading = (state: GlobalState): boolean => {
 export const getAgentByPostId = (state: GlobalState, postId: string): Agent | undefined => {
     const agents = getAgents(state);
     return Object.values(agents).find((a) => a.post_id === postId);
+};
+
+export const getWorkflows = (state: GlobalState): Record<string, Workflow> => {
+    return getPluginState(state).workflows;
+};
+
+export const getWorkflowForAgent = (state: GlobalState, agentId: string): Workflow | undefined => {
+    const workflows = getWorkflows(state);
+    return Object.values(workflows).find(
+        (w) => w.planner_agent_id === agentId || w.implementer_agent_id === agentId,
+    );
+};
+
+export const getWorkflow = (state: GlobalState, workflowId: string): Workflow | undefined => {
+    return getWorkflows(state)[workflowId];
 };

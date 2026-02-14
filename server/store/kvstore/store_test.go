@@ -305,3 +305,207 @@ func TestIsActiveStatus(t *testing.T) {
 	assert.False(t, isActiveStatus(""))
 	assert.False(t, isActiveStatus("UNKNOWN"))
 }
+
+func TestSaveAndGetWorkflow(t *testing.T) {
+	s, api := setupStore(t)
+
+	workflow := &HITLWorkflow{
+		ID:             "wf-123",
+		UserID:         "user-1",
+		ChannelID:      "ch-1",
+		RootPostID:     "root-1",
+		TriggerPostID:  "trigger-1",
+		Phase:          PhaseContextReview,
+		Repository:     "org/repo",
+		Branch:         "main",
+		Model:          "auto",
+		AutoCreatePR:   true,
+		OriginalPrompt: "fix the login bug",
+		CreatedAt:      1000,
+		UpdatedAt:      1000,
+	}
+
+	mockKVSet(api, prefixHITL+"wf-123", mustJSON(t, workflow))
+
+	err := s.SaveWorkflow(workflow)
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixHITL+"wf-123").Return(mustJSON(t, workflow), nil)
+
+	got, err := s.GetWorkflow("wf-123")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "wf-123", got.ID)
+	assert.Equal(t, "user-1", got.UserID)
+	assert.Equal(t, PhaseContextReview, got.Phase)
+	assert.Equal(t, "org/repo", got.Repository)
+	assert.Equal(t, "fix the login bug", got.OriginalPrompt)
+	api.AssertExpectations(t)
+}
+
+func TestGetNonExistentWorkflow(t *testing.T) {
+	s, api := setupStore(t)
+
+	api.On("KVGet", prefixHITL+"nonexistent").Return([]byte(nil), nil)
+
+	got, err := s.GetWorkflow("nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	api.AssertExpectations(t)
+}
+
+func TestDeleteWorkflow(t *testing.T) {
+	s, api := setupStore(t)
+
+	mockKVDelete(api, prefixHITL+"wf-del")
+
+	err := s.DeleteWorkflow("wf-del")
+	require.NoError(t, err)
+	api.AssertExpectations(t)
+}
+
+func TestSetAndGetThreadWorkflow(t *testing.T) {
+	s, api := setupStore(t)
+
+	// Set thread -> workflow mapping (value has "hitl:" prefix).
+	mockKVSet(api, prefixThread+"root-1", mustJSON(t, hitlThreadPrefix+"wf-123"))
+
+	err := s.SetThreadWorkflow("root-1", "wf-123")
+	require.NoError(t, err)
+
+	// Get: thread value starts with "hitl:", so it fetches the workflow.
+	api.On("KVGet", prefixThread+"root-1").Return(mustJSON(t, hitlThreadPrefix+"wf-123"), nil)
+
+	workflow := &HITLWorkflow{
+		ID:     "wf-123",
+		UserID: "user-1",
+		Phase:  PhaseContextReview,
+	}
+	api.On("KVGet", prefixHITL+"wf-123").Return(mustJSON(t, workflow), nil)
+
+	got, err := s.GetWorkflowByThread("root-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "wf-123", got.ID)
+	api.AssertExpectations(t)
+}
+
+func TestGetWorkflowByThreadReturnsNilForAgentMapping(t *testing.T) {
+	s, api := setupStore(t)
+
+	// Thread maps to a bare agent ID (no "hitl:" prefix).
+	api.On("KVGet", prefixThread+"root-1").Return(mustJSON(t, "agent-456"), nil)
+
+	got, err := s.GetWorkflowByThread("root-1")
+	require.NoError(t, err)
+	assert.Nil(t, got) // Should return nil because it's not a workflow
+	api.AssertExpectations(t)
+}
+
+func TestGetWorkflowByThreadNotFound(t *testing.T) {
+	s, api := setupStore(t)
+
+	api.On("KVGet", prefixThread+"nonexistent").Return([]byte(nil), nil)
+
+	got, err := s.GetWorkflowByThread("nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	api.AssertExpectations(t)
+}
+
+func TestSetAndGetAgentWorkflow(t *testing.T) {
+	s, api := setupStore(t)
+
+	mockKVSet(api, prefixHITLAgent+"agent-789", mustJSON(t, "wf-123"))
+
+	err := s.SetAgentWorkflow("agent-789", "wf-123")
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixHITLAgent+"agent-789").Return(mustJSON(t, "wf-123"), nil)
+
+	workflowID, err := s.GetWorkflowByAgent("agent-789")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-123", workflowID)
+	api.AssertExpectations(t)
+}
+
+func TestGetWorkflowByAgentNotFound(t *testing.T) {
+	s, api := setupStore(t)
+
+	api.On("KVGet", prefixHITLAgent+"nonexistent").Return([]byte(nil), nil)
+
+	workflowID, err := s.GetWorkflowByAgent("nonexistent")
+	require.NoError(t, err)
+	assert.Empty(t, workflowID)
+	api.AssertExpectations(t)
+}
+
+func TestDeleteAgentWorkflow(t *testing.T) {
+	s, api := setupStore(t)
+
+	mockKVDelete(api, prefixHITLAgent+"agent-del")
+
+	err := s.DeleteAgentWorkflow("agent-del")
+	require.NoError(t, err)
+	api.AssertExpectations(t)
+}
+
+func TestWorkflowWithAllFields(t *testing.T) {
+	s, api := setupStore(t)
+
+	workflow := &HITLWorkflow{
+		ID:                 "wf-full",
+		UserID:             "user-1",
+		ChannelID:          "ch-1",
+		RootPostID:         "root-1",
+		TriggerPostID:      "trigger-1",
+		Phase:              PhasePlanReview,
+		Repository:         "org/repo",
+		Branch:             "main",
+		Model:              "claude-sonnet",
+		AutoCreatePR:       true,
+		OriginalPrompt:     "fix the bug",
+		EnrichedContext:    "enriched context text",
+		ApprovedContext:    "approved context text",
+		ContextPostID:      "ctx-post-1",
+		ContextImages:      []ImageRef{{FileID: "file-1", Width: 800, Height: 600}},
+		PlannerAgentID:     "planner-agent-1",
+		RetrievedPlan:      "the plan",
+		PlanPostID:         "plan-post-1",
+		PlanIterationCount: 2,
+		SkipContextReview:  false,
+		SkipPlanLoop:       false,
+		CreatedAt:          1000,
+		UpdatedAt:          2000,
+	}
+
+	mockKVSet(api, prefixHITL+"wf-full", mustJSON(t, workflow))
+
+	err := s.SaveWorkflow(workflow)
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixHITL+"wf-full").Return(mustJSON(t, workflow), nil)
+
+	got, err := s.GetWorkflow("wf-full")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, PhasePlanReview, got.Phase)
+	assert.Equal(t, "enriched context text", got.EnrichedContext)
+	assert.Equal(t, "approved context text", got.ApprovedContext)
+	assert.Len(t, got.ContextImages, 1)
+	assert.Equal(t, "file-1", got.ContextImages[0].FileID)
+	assert.Equal(t, 800, got.ContextImages[0].Width)
+	assert.Equal(t, "planner-agent-1", got.PlannerAgentID)
+	assert.Equal(t, "the plan", got.RetrievedPlan)
+	assert.Equal(t, 2, got.PlanIterationCount)
+	api.AssertExpectations(t)
+}
+
+func TestPhaseConstants(t *testing.T) {
+	assert.Equal(t, "context_review", PhaseContextReview)
+	assert.Equal(t, "planning", PhasePlanning)
+	assert.Equal(t, "plan_review", PhasePlanReview)
+	assert.Equal(t, "implementing", PhaseImplementing)
+	assert.Equal(t, "rejected", PhaseRejected)
+	assert.Equal(t, "complete", PhaseComplete)
+}

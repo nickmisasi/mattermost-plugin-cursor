@@ -1,3 +1,7 @@
+---
+description: "Walk through adding a new HTTP endpoint to the plugin's REST API, including route registration, handler implementation, webapp client method, and tests."
+---
+
 # Add a New REST API Endpoint
 
 This skill walks you through adding a new HTTP endpoint to the plugin's REST API.

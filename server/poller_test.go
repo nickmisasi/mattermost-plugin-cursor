@@ -37,6 +37,20 @@ func setupPollerPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClien
 		Props:  model.StringInterface{},
 	}, nil).Maybe()
 
+	// getUsername calls GetUser.
+	api.On("GetUser", mock.AnythingOfType("string")).Return(&model.User{
+		Id:       "user-1",
+		Username: "testuser",
+	}, nil).Maybe()
+
+	// getPluginURL calls GetConfig.
+	siteURL := "http://localhost:8065"
+	api.On("GetConfig").Return(&model.Config{
+		ServiceSettings: model.ServiceSettings{
+			SiteURL: &siteURL,
+		},
+	}).Maybe()
+
 	cursorClient := &mockCursorClient{}
 	store := &mockKVStore{}
 
@@ -139,6 +153,7 @@ func TestPoller_RunningToFinished(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:      "agent-1",
 		Status:  cursor.AgentStatusFinished,
@@ -188,6 +203,7 @@ func TestPoller_RunningToFailed(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:      "agent-1",
 		Status:  cursor.AgentStatusFailed,
@@ -234,6 +250,7 @@ func TestPoller_RunningToStopped(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:     "agent-1",
 		Status: cursor.AgentStatusStopped,
@@ -353,4 +370,155 @@ func TestPoller_NilCursorClient(t *testing.T) {
 	p.pollAgentStatuses()
 
 	store.AssertNotCalled(t, "SaveAgent")
+}
+
+// --- Phase 3: Workflow-aware poller routing tests ---
+
+func TestPoller_PlannerFinished_RoutesToWorkflow(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "planner-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
+		UserID:         "user-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	cursorClient.On("GetAgent", mock.Anything, "planner-1").Return(&cursor.Agent{
+		ID:     "planner-1",
+		Status: cursor.AgentStatusFinished,
+	}, nil)
+
+	// The planner belongs to a workflow in the planning phase.
+	store.On("GetWorkflowByAgent", "planner-1").Return("wf-1", nil)
+	store.On("GetWorkflow", "wf-1").Return(&kvstore.HITLWorkflow{
+		ID:             "wf-1",
+		UserID:         "user-1",
+		ChannelID:      "ch-1",
+		RootPostID:     "root-1",
+		PlannerAgentID: "planner-1",
+		Repository:     "org/repo",
+		Branch:         "main",
+		Model:          "auto",
+		Phase:          kvstore.PhasePlanning,
+	}, nil)
+
+	// handlePlannerFinished will call GetConversation.
+	cursorClient.On("GetConversation", mock.Anything, "planner-1").Return(&cursor.Conversation{
+		Messages: []cursor.Message{
+			{Type: "assistant_message", Text: "### Summary\nThe plan."},
+		},
+	}, nil)
+
+	store.On("SaveWorkflow", mock.Anything).Return(nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "plan-review-post"}, nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+
+	// SaveAgent for status update.
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	p.pollAgentStatuses()
+
+	// handleWorkflowAgentTerminal should return true for planners, so normal
+	// handleAgentFinished (reactions, etc.) should NOT be called.
+	api.AssertNotCalled(t, "RemoveReaction")
+	api.AssertNotCalled(t, "AddReaction")
+
+	// But the agent record should still be saved with updated status.
+	store.AssertCalled(t, "SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.CursorAgentID == "planner-1" && r.Status == "FINISHED"
+	}))
+}
+
+func TestPoller_ImplementerFinished_NormalHandling(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "impl-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
+		UserID:         "user-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	cursorClient.On("GetAgent", mock.Anything, "impl-1").Return(&cursor.Agent{
+		ID:      "impl-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Done",
+		Target:  cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/99"},
+	}, nil)
+
+	// The implementer belongs to a workflow in the implementing phase.
+	store.On("GetWorkflowByAgent", "impl-1").Return("wf-1", nil)
+	store.On("GetWorkflow", "wf-1").Return(&kvstore.HITLWorkflow{
+		ID:    "wf-1",
+		Phase: kvstore.PhaseImplementing,
+	}, nil)
+
+	store.On("SaveWorkflow", mock.Anything).Return(nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+
+	// Normal terminal handling should still run for implementers.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "hourglass_flowing_sand"
+	})).Return(nil)
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "white_check_mark"
+	})).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	p.pollAgentStatuses()
+
+	// Normal finished handling should have run.
+	api.AssertCalled(t, "RemoveReaction", mock.Anything)
+	api.AssertCalled(t, "AddReaction", mock.Anything)
+}
+
+func TestPoller_NonWorkflowAgent_NormalHandling(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		BotReplyPostID: "bot-reply-1",
+		UserID:         "user-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "All done",
+		Target:  cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/1"},
+	}, nil)
+
+	// Agent does NOT belong to any workflow.
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	// Normal finished handling.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "hourglass_flowing_sand"
+	})).Return(nil)
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "white_check_mark"
+	})).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+
+	p.pollAgentStatuses()
+
+	api.AssertCalled(t, "RemoveReaction", mock.Anything)
+	api.AssertCalled(t, "AddReaction", mock.Anything)
 }

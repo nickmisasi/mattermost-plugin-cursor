@@ -12,6 +12,7 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-cursor/server/attachments"
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
+	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
 // initRouter initializes the HTTP router for the plugin.
@@ -28,11 +29,19 @@ func (p *Plugin) initRouter() *mux.Router {
 	// Dialog submission endpoint for /cursor settings.
 	authedRouter.HandleFunc("/dialog/settings", p.handleSettingsDialogSubmission).Methods(http.MethodPost)
 
+	// HITL action button handler (Phase 2).
+	authedRouter.HandleFunc("/actions/hitl-response", p.handleHITLResponse).Methods(http.MethodPost)
+
 	// Phase 4: REST endpoints for the webapp frontend.
 	authedRouter.HandleFunc("/agents", p.handleGetAgents).Methods(http.MethodGet)
 	authedRouter.HandleFunc("/agents/{id}", p.handleGetAgent).Methods(http.MethodGet)
 	authedRouter.HandleFunc("/agents/{id}/followup", p.handleAddFollowup).Methods(http.MethodPost)
 	authedRouter.HandleFunc("/agents/{id}", p.handleCancelAgent).Methods(http.MethodDelete)
+	authedRouter.HandleFunc("/agents/{id}/archive", p.handleArchiveAgent).Methods(http.MethodPost)
+	authedRouter.HandleFunc("/agents/{id}/unarchive", p.handleUnarchiveAgent).Methods(http.MethodPost)
+
+	// Phase 5: Workflow detail endpoint for the webapp.
+	authedRouter.HandleFunc("/workflows/{id}", p.handleGetWorkflow).Methods(http.MethodGet)
 
 	// Admin-only routes.
 	adminRouter := authedRouter.PathPrefix("/admin").Subrouter()
@@ -161,20 +170,24 @@ func (p *Plugin) isSystemAdmin(userID string) bool {
 
 // AgentResponse is the JSON representation of an agent for the webapp.
 type AgentResponse struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	Repository string `json:"repository"`
-	Branch     string `json:"branch"`
-	Prompt     string `json:"prompt"`
-	PrURL      string `json:"pr_url"`
-	CursorURL  string `json:"cursor_url"`
-	ChannelID  string `json:"channel_id"`
-	PostID     string `json:"post_id"`
-	RootPostID string `json:"root_post_id"`
-	Summary    string `json:"summary"`
-	Model      string `json:"model"`
-	CreatedAt  int64  `json:"created_at"`
-	UpdatedAt  int64  `json:"updated_at"`
+	ID                 string `json:"id"`
+	Status             string `json:"status"`
+	Repository         string `json:"repository"`
+	Branch             string `json:"branch"`
+	Prompt             string `json:"prompt"`
+	PrURL              string `json:"pr_url"`
+	CursorURL          string `json:"cursor_url"`
+	ChannelID          string `json:"channel_id"`
+	PostID             string `json:"post_id"`
+	RootPostID         string `json:"root_post_id"`
+	Summary            string `json:"summary"`
+	Model              string `json:"model"`
+	CreatedAt          int64  `json:"created_at"`
+	UpdatedAt          int64  `json:"updated_at"`
+	Archived           bool   `json:"archived,omitempty"`
+	WorkflowID         string `json:"workflow_id,omitempty"`
+	WorkflowPhase      string `json:"workflow_phase,omitempty"`
+	PlanIterationCount int    `json:"plan_iteration_count,omitempty"`
 }
 
 // AgentsListResponse is the response from GET /api/v1/agents.
@@ -194,6 +207,7 @@ type StatusOKResponse struct {
 
 func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("Mattermost-User-ID")
+	wantArchived := r.URL.Query().Get("archived") == "true"
 
 	agents, err := p.kvstore.GetAgentsByUser(userID)
 	if err != nil {
@@ -206,7 +220,12 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 		Agents: make([]AgentResponse, 0, len(agents)),
 	}
 	for _, a := range agents {
-		resp.Agents = append(resp.Agents, AgentResponse{
+		// Filter by archived status.
+		if a.Archived != wantArchived {
+			continue
+		}
+
+		agentResp := AgentResponse{
 			ID:         a.CursorAgentID,
 			Status:     a.Status,
 			Repository: a.Repository,
@@ -215,12 +234,25 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 			CursorURL:  fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
 			ChannelID:  a.ChannelID,
 			PostID:     a.PostID,
+			RootPostID: a.PostID,
 			Prompt:     a.Prompt,
 			Model:      a.Model,
 			Summary:    a.Summary,
 			CreatedAt:  a.CreatedAt,
 			UpdatedAt:  a.UpdatedAt,
-		})
+			Archived:   a.Archived,
+		}
+
+		// Look up workflow association for HITL-aware agents.
+		if wfID, wfErr := p.kvstore.GetWorkflowByAgent(a.CursorAgentID); wfErr == nil && wfID != "" {
+			if wf, wfGetErr := p.kvstore.GetWorkflow(wfID); wfGetErr == nil && wf != nil {
+				agentResp.WorkflowID = wf.ID
+				agentResp.WorkflowPhase = wf.Phase
+				agentResp.PlanIterationCount = wf.PlanIterationCount
+			}
+		}
+
+		resp.Agents = append(resp.Agents, agentResp)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -271,11 +303,22 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		CursorURL:  fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
 		ChannelID:  record.ChannelID,
 		PostID:     record.PostID,
+		RootPostID: record.PostID,
 		Prompt:     record.Prompt,
 		Model:      record.Model,
 		Summary:    record.Summary,
 		CreatedAt:  record.CreatedAt,
 		UpdatedAt:  record.UpdatedAt,
+		Archived:   record.Archived,
+	}
+
+	// Look up workflow association.
+	if wfID, wfErr := p.kvstore.GetWorkflowByAgent(record.CursorAgentID); wfErr == nil && wfID != "" {
+		if wf, wfGetErr := p.kvstore.GetWorkflow(wfID); wfGetErr == nil && wf != nil {
+			resp.WorkflowID = wf.ID
+			resp.WorkflowPhase = wf.Phase
+			resp.PlanIterationCount = wf.PlanIterationCount
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -413,4 +456,296 @@ func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
+}
+
+func (p *Plugin) handleArchiveAgent(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("Mattermost-User-ID")
+	agentID := mux.Vars(r)["id"]
+
+	record, err := p.kvstore.GetAgent(agentID)
+	if err != nil {
+		p.API.LogError("Failed to get agent", "agentID", agentID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if record == nil || record.UserID != userID {
+		http.Error(w, "Agent not found", http.StatusNotFound)
+		return
+	}
+
+	// If agent is still active, stop it first.
+	status := cursor.AgentStatus(record.Status)
+	if !status.IsTerminal() {
+		cursorClient := p.getCursorClient()
+		if cursorClient == nil {
+			p.API.LogError("Cannot stop agent: Cursor client not initialized", "agentID", agentID)
+			http.Error(w, "Cursor client not configured", http.StatusInternalServerError)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
+			p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
+			http.Error(w, "Failed to stop agent", http.StatusInternalServerError)
+			return
+		}
+		record.Status = string(cursor.AgentStatusStopped)
+	}
+
+	record.Archived = true
+	record.UpdatedAt = time.Now().UnixMilli()
+	if err := p.kvstore.SaveAgent(record); err != nil {
+		p.API.LogError("Failed to save archived agent", "agentID", agentID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
+}
+
+func (p *Plugin) handleUnarchiveAgent(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("Mattermost-User-ID")
+	agentID := mux.Vars(r)["id"]
+
+	record, err := p.kvstore.GetAgent(agentID)
+	if err != nil {
+		p.API.LogError("Failed to get agent", "agentID", agentID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if record == nil || record.UserID != userID {
+		http.Error(w, "Agent not found", http.StatusNotFound)
+		return
+	}
+
+	record.Archived = false
+	record.UpdatedAt = time.Now().UnixMilli()
+	if err := p.kvstore.SaveAgent(record); err != nil {
+		p.API.LogError("Failed to save unarchived agent", "agentID", agentID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
+}
+
+// WorkflowResponse is the JSON representation of a HITL workflow for the webapp.
+type WorkflowResponse struct {
+	ID                 string `json:"id"`
+	UserID             string `json:"user_id"`
+	ChannelID          string `json:"channel_id"`
+	RootPostID         string `json:"root_post_id"`
+	Phase              string `json:"phase"`
+	Repository         string `json:"repository"`
+	Branch             string `json:"branch"`
+	Model              string `json:"model"`
+	OriginalPrompt     string `json:"original_prompt"`
+	EnrichedContext    string `json:"enriched_context"`
+	ApprovedContext    string `json:"approved_context"`
+	PlannerAgentID     string `json:"planner_agent_id"`
+	RetrievedPlan      string `json:"retrieved_plan"`
+	ApprovedPlan       string `json:"approved_plan"`
+	PlanIterationCount int    `json:"plan_iteration_count"`
+	ImplementerAgentID string `json:"implementer_agent_id"`
+	SkipContextReview  bool   `json:"skip_context_review"`
+	SkipPlanLoop       bool   `json:"skip_plan_loop"`
+	CreatedAt          int64  `json:"created_at"`
+	UpdatedAt          int64  `json:"updated_at"`
+}
+
+func (p *Plugin) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("Mattermost-User-ID")
+	workflowID := mux.Vars(r)["id"]
+
+	workflow, err := p.kvstore.GetWorkflow(workflowID)
+	if err != nil {
+		p.API.LogError("Failed to get workflow", "workflowID", workflowID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if workflow == nil || workflow.UserID != userID {
+		http.Error(w, "Workflow not found", http.StatusNotFound)
+		return
+	}
+
+	resp := WorkflowResponse{
+		ID:                 workflow.ID,
+		UserID:             workflow.UserID,
+		ChannelID:          workflow.ChannelID,
+		RootPostID:         workflow.RootPostID,
+		Phase:              workflow.Phase,
+		Repository:         workflow.Repository,
+		Branch:             workflow.Branch,
+		Model:              workflow.Model,
+		OriginalPrompt:     workflow.OriginalPrompt,
+		EnrichedContext:    workflow.EnrichedContext,
+		ApprovedContext:    workflow.ApprovedContext,
+		PlannerAgentID:     workflow.PlannerAgentID,
+		RetrievedPlan:      workflow.RetrievedPlan,
+		ApprovedPlan:       workflow.ApprovedPlan,
+		PlanIterationCount: workflow.PlanIterationCount,
+		ImplementerAgentID: workflow.ImplementerAgentID,
+		SkipContextReview:  workflow.SkipContextReview,
+		SkipPlanLoop:       workflow.SkipPlanLoop,
+		CreatedAt:          workflow.CreatedAt,
+		UpdatedAt:          workflow.UpdatedAt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleHITLResponse processes PostAction button clicks for HITL Accept/Reject.
+func (p *Plugin) handleHITLResponse(w http.ResponseWriter, r *http.Request) {
+	// Step 1: Parse the PostActionIntegrationRequest.
+	var request model.PostActionIntegrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		p.API.LogError("Failed to decode HITL action request", "error", err.Error())
+		p.writePostActionResponseAttachment(w, nil)
+		return
+	}
+
+	// Step 2: Extract context values.
+	workflowID, _ := request.Context["workflow_id"].(string)
+	action, _ := request.Context["action"].(string)
+	phase, _ := request.Context["phase"].(string)
+
+	if workflowID == "" || action == "" || phase == "" {
+		p.API.LogError("HITL action missing required context",
+			"workflow_id", workflowID,
+			"action", action,
+			"phase", phase,
+		)
+		p.writePostActionResponseAttachment(w, nil)
+		return
+	}
+
+	// Step 3: Load the workflow.
+	workflow, err := p.kvstore.GetWorkflow(workflowID)
+	if err != nil {
+		p.API.LogError("Failed to get workflow for HITL action",
+			"workflow_id", workflowID,
+			"error", err.Error(),
+		)
+		p.writePostActionResponseAttachment(w, nil)
+		return
+	}
+	if workflow == nil {
+		p.sendEphemeralToActionUser(request, "This workflow no longer exists.")
+		p.writePostActionResponseAttachment(w, nil)
+		return
+	}
+
+	// Step 4: Validate caller is the workflow initiator.
+	callerUserID := request.UserId
+	if callerUserID != workflow.UserID {
+		ownerUsername := p.getUsername(workflow.UserID)
+		p.sendEphemeralToActionUser(request, fmt.Sprintf("Only @%s can approve or reject this workflow.", ownerUsername))
+		p.writePostActionResponseAttachment(w, nil)
+		return
+	}
+
+	// Step 5: Check for already-handled workflows (double-click prevention).
+	username := p.getUsername(workflow.UserID)
+
+	if phase == kvstore.PhaseContextReview && workflow.Phase != kvstore.PhaseContextReview {
+		p.sendEphemeralToActionUser(request, "This context review has already been resolved.")
+		var updatedAttachment *model.SlackAttachment
+		if workflow.Phase == kvstore.PhaseRejected {
+			updatedAttachment = attachments.BuildContextRejectedAttachment(username)
+		} else {
+			updatedAttachment = attachments.BuildContextAcceptedAttachment(
+				workflow.Repository, workflow.Branch, workflow.Model, username,
+			)
+		}
+		p.writePostActionResponseAttachment(w, updatedAttachment)
+		return
+	}
+
+	if phase == kvstore.PhasePlanReview && workflow.Phase != kvstore.PhasePlanReview {
+		p.sendEphemeralToActionUser(request, "This plan review has already been resolved.")
+		var updatedAttachment *model.SlackAttachment
+		if workflow.Phase == kvstore.PhaseRejected {
+			updatedAttachment = attachments.BuildPlanRejectedAttachment(username)
+		} else {
+			updatedAttachment = attachments.BuildPlanAcceptedAttachment(username, workflow.PlanIterationCount)
+		}
+		p.writePostActionResponseAttachment(w, updatedAttachment)
+		return
+	}
+
+	// Step 6: Handle the action.
+	switch action {
+	case "accept":
+		switch phase {
+		case kvstore.PhaseContextReview:
+			acceptedAttachment := attachments.BuildContextAcceptedAttachment(
+				workflow.Repository, workflow.Branch, workflow.Model, username,
+			)
+			p.writePostActionResponseAttachment(w, acceptedAttachment)
+			go p.acceptContext(workflow)
+		case kvstore.PhasePlanReview:
+			acceptedAttachment := attachments.BuildPlanAcceptedAttachment(username, workflow.PlanIterationCount)
+			p.writePostActionResponseAttachment(w, acceptedAttachment)
+			go p.acceptPlan(workflow)
+		default:
+			p.API.LogError("Unknown HITL phase for accept", "phase", phase, "action", action)
+			p.writePostActionResponseAttachment(w, nil)
+		}
+
+	case "reject":
+		switch phase {
+		case kvstore.PhaseContextReview:
+			rejectedAttachment := attachments.BuildContextRejectedAttachment(username)
+			p.writePostActionResponseAttachment(w, rejectedAttachment)
+			go p.rejectWorkflow(workflow)
+		case kvstore.PhasePlanReview:
+			rejectedAttachment := attachments.BuildPlanRejectedAttachment(username)
+			p.writePostActionResponseAttachment(w, rejectedAttachment)
+			go p.rejectWorkflow(workflow)
+		default:
+			p.API.LogError("Unknown HITL phase for reject", "phase", phase, "action", action)
+			p.writePostActionResponseAttachment(w, nil)
+		}
+
+	default:
+		p.API.LogError("Unknown HITL action", "action", action)
+		p.writePostActionResponseAttachment(w, nil)
+	}
+}
+
+// writePostActionResponseAttachment writes a PostActionIntegrationResponse.
+// If attachment is non-nil, the response uses Update to replace the post's attachment
+// (this removes the action buttons). If nil, returns an empty response (no-op on the post).
+func (p *Plugin) writePostActionResponseAttachment(w http.ResponseWriter, attachment *model.SlackAttachment) {
+	w.Header().Set("Content-Type", "application/json")
+
+	resp := &model.PostActionIntegrationResponse{}
+	if attachment != nil {
+		resp.Update = &model.Post{}
+		model.ParseSlackAttachment(resp.Update, []*model.SlackAttachment{attachment})
+	}
+
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		p.API.LogError("Failed to encode PostActionIntegrationResponse", "error", err.Error())
+	}
+}
+
+// sendEphemeralToActionUser sends an ephemeral post to the user who clicked a PostAction button.
+func (p *Plugin) sendEphemeralToActionUser(request model.PostActionIntegrationRequest, message string) {
+	// Determine the thread root: if the post is already in a thread, use its RootId.
+	rootID := request.PostId
+	if post, err := p.API.GetPost(request.PostId); err == nil && post != nil && post.RootId != "" {
+		rootID = post.RootId
+	}
+
+	_ = p.API.SendEphemeralPost(request.UserId, &model.Post{
+		UserId:    p.getBotUserID(),
+		ChannelId: request.ChannelId,
+		RootId:    rootID,
+		Message:   message,
+	})
 }

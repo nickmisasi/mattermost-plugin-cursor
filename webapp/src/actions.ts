@@ -1,5 +1,7 @@
+import {Client4} from 'mattermost-redux/client';
+
 import Client from './client';
-import type {Agent, AgentStatus, AgentStatusChangeEvent, AgentCreatedEvent} from './types';
+import type {Agent, AgentStatus, AgentStatusChangeEvent, AgentCreatedEvent, Workflow, WorkflowPhase, WorkflowPhaseChangeEvent} from './types';
 
 // Action type constants
 export const AGENTS_RECEIVED = 'com.mattermost.plugin-cursor/AGENTS_RECEIVED';
@@ -9,6 +11,8 @@ export const AGENT_CREATED = 'com.mattermost.plugin-cursor/AGENT_CREATED';
 export const AGENT_REMOVED = 'com.mattermost.plugin-cursor/AGENT_REMOVED';
 export const SELECT_AGENT = 'com.mattermost.plugin-cursor/SELECT_AGENT';
 export const SET_LOADING = 'com.mattermost.plugin-cursor/SET_LOADING';
+export const WORKFLOW_RECEIVED = 'com.mattermost.plugin-cursor/WORKFLOW_RECEIVED';
+export const WORKFLOW_PHASE_CHANGED = 'com.mattermost.plugin-cursor/WORKFLOW_PHASE_CHANGED';
 
 // Action interfaces
 interface AgentsReceivedAction {
@@ -52,6 +56,23 @@ interface SetLoadingAction {
     data: {isLoading: boolean};
 }
 
+interface WorkflowReceivedAction {
+    type: typeof WORKFLOW_RECEIVED;
+    data: Workflow;
+}
+
+interface WorkflowPhaseChangedAction {
+    type: typeof WORKFLOW_PHASE_CHANGED;
+    data: {
+        workflow_id: string;
+        phase: WorkflowPhase;
+        planner_agent_id: string;
+        implementer_agent_id: string;
+        plan_iteration_count: number;
+        updated_at: number;
+    };
+}
+
 export type PluginAction =
     | AgentsReceivedAction
     | AgentReceivedAction
@@ -59,7 +80,9 @@ export type PluginAction =
     | AgentCreatedAction
     | AgentRemovedAction
     | SelectAgentAction
-    | SetLoadingAction;
+    | SetLoadingAction
+    | WorkflowReceivedAction
+    | WorkflowPhaseChangedAction;
 
 // --- Sync action creators ---
 
@@ -70,11 +93,11 @@ export const selectAgent = (agentId: string | null): SelectAgentAction => ({
 
 // --- Async action creators (thunks) ---
 
-export function fetchAgents() {
+export function fetchAgents(archived?: boolean) {
     return async (dispatch: (action: PluginAction) => void) => {
         dispatch({type: SET_LOADING, data: {isLoading: true}});
         try {
-            const response = await Client.getAgents();
+            const response = await Client.getAgents(archived);
             dispatch({type: AGENTS_RECEIVED, data: response.agents});
         } catch (error) {
             console.error('Failed to fetch agents:', error); // eslint-disable-line no-console
@@ -115,6 +138,58 @@ export function cancelAgent(agentId: string) {
     };
 }
 
+export function archiveAgent(agentId: string) {
+    return async (dispatch: (action: PluginAction) => void) => {
+        try {
+            await Client.archiveAgent(agentId);
+            dispatch({type: AGENT_REMOVED, data: {agent_id: agentId}});
+        } catch (error) {
+            console.error('Failed to archive agent:', error); // eslint-disable-line no-console
+        }
+    };
+}
+
+export function unarchiveAgent(agentId: string) {
+    return async (dispatch: (action: PluginAction) => void) => {
+        try {
+            await Client.unarchiveAgent(agentId);
+            dispatch({type: AGENT_REMOVED, data: {agent_id: agentId}});
+        } catch (error) {
+            console.error('Failed to unarchive agent:', error); // eslint-disable-line no-console
+        }
+    };
+}
+
+export function openSettings() {
+    return async (_dispatch: any, getState: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+        const state = getState();
+        const channelId = state.entities?.channels?.currentChannelId;
+        const teamId = state.entities?.teams?.currentTeamId;
+        if (!channelId) {
+            return;
+        }
+        try {
+            const result = await Client4.executeCommand('/cursor settings', {channel_id: channelId, team_id: teamId || '', root_id: ''});
+            if (result?.trigger_id) {
+                _dispatch({type: 'RECEIVED_DIALOG_TRIGGER_ID', data: result.trigger_id});
+            }
+        } catch (error) {
+            console.error('Failed to open settings dialog:', error); // eslint-disable-line no-console
+        }
+    };
+}
+
+export function fetchWorkflow(workflowId: string) {
+    return async (dispatch: (action: PluginAction) => void) => {
+        try {
+            const workflow = await Client.getWorkflow(workflowId);
+            dispatch({type: WORKFLOW_RECEIVED, data: workflow});
+        } catch (error) {
+            console.error('Failed to fetch workflow:', error); // eslint-disable-line no-console
+        }
+    };
+}
+
 // --- WebSocket event handlers ---
 
 const parseTimestamp = (value: string): number => {
@@ -150,5 +225,17 @@ export const websocketAgentCreated = (data: AgentCreatedEvent): AgentCreatedActi
         model: '',
         created_at: parseTimestamp(data.created_at),
         updated_at: parseTimestamp(data.created_at),
+    },
+});
+
+export const websocketWorkflowPhaseChange = (data: WorkflowPhaseChangeEvent): WorkflowPhaseChangedAction => ({
+    type: WORKFLOW_PHASE_CHANGED,
+    data: {
+        workflow_id: data.workflow_id,
+        phase: data.phase,
+        planner_agent_id: data.planner_agent_id,
+        implementer_agent_id: data.implementer_agent_id,
+        plan_iteration_count: parseInt(data.plan_iteration_count, 10) || 0,
+        updated_at: parseTimestamp(data.updated_at),
     },
 });

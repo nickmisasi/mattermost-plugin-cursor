@@ -205,6 +205,47 @@ func (m *mockKVStore) MarkDeliveryProcessed(deliveryID string) error {
 	return m.Called(deliveryID).Error(0)
 }
 
+func (m *mockKVStore) GetWorkflow(workflowID string) (*kvstore.HITLWorkflow, error) {
+	args := m.Called(workflowID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.HITLWorkflow), args.Error(1)
+}
+
+func (m *mockKVStore) SaveWorkflow(workflow *kvstore.HITLWorkflow) error {
+	return m.Called(workflow).Error(0)
+}
+
+func (m *mockKVStore) DeleteWorkflow(workflowID string) error {
+	return m.Called(workflowID).Error(0)
+}
+
+func (m *mockKVStore) GetWorkflowByThread(rootPostID string) (*kvstore.HITLWorkflow, error) {
+	args := m.Called(rootPostID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.HITLWorkflow), args.Error(1)
+}
+
+func (m *mockKVStore) GetWorkflowByAgent(cursorAgentID string) (string, error) {
+	args := m.Called(cursorAgentID)
+	return args.String(0), args.Error(1)
+}
+
+func (m *mockKVStore) SetThreadWorkflow(rootPostID string, workflowID string) error {
+	return m.Called(rootPostID, workflowID).Error(0)
+}
+
+func (m *mockKVStore) SetAgentWorkflow(cursorAgentID string, workflowID string) error {
+	return m.Called(cursorAgentID, workflowID).Error(0)
+}
+
+func (m *mockKVStore) DeleteAgentWorkflow(cursorAgentID string) error {
+	return m.Called(cursorAgentID).Error(0)
+}
+
 // setupTestPlugin creates a Plugin with mocked dependencies for handler testing.
 func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient, *mockKVStore) {
 	t.Helper()
@@ -236,10 +277,12 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 	p.botUserID = "bot-user-id"
 	p.botUsername = "cursor"
 	p.configuration = &configuration{
-		DefaultRepository: "org/default-repo",
-		DefaultBranch:     "main",
-		DefaultModel:      "auto",
-		AutoCreatePR:      true,
+		DefaultRepository:   "org/default-repo",
+		DefaultBranch:       "main",
+		DefaultModel:        "auto",
+		AutoCreatePR:        true,
+		EnableContextReview: false, // Default to false so existing tests pass unchanged.
+		EnablePlanLoop:      false,
 	}
 
 	return p, api, cursorClient, store
@@ -466,6 +509,9 @@ func TestMessageHasBeenPosted_FollowUp_RunningAgent(t *testing.T) {
 		Message:   "also fix the tests",
 	}
 
+	// No HITL workflow in this thread.
+	store.On("GetWorkflowByThread", "root-post-1").Return(nil, nil)
+
 	// Thread -> agent mapping
 	store.On("GetAgentIDByThread", "root-post-1").Return("agent-123", nil)
 	store.On("GetAgent", "agent-123").Return(&kvstore.AgentRecord{
@@ -507,6 +553,9 @@ func TestMessageHasBeenPosted_FollowUp_FinishedAgent_Ignored(t *testing.T) {
 		Message:   "also fix the tests",
 	}
 
+	// No HITL workflow in this thread.
+	store.On("GetWorkflowByThread", "root-post-1").Return(nil, nil)
+
 	// Thread -> agent mapping (agent is FINISHED).
 	store.On("GetAgentIDByThread", "root-post-1").Return("agent-123", nil)
 	store.On("GetAgent", "agent-123").Return(&kvstore.AgentRecord{
@@ -531,6 +580,9 @@ func TestMessageHasBeenPosted_MentionInThread_RunningAgent_SendsFollowUp(t *test
 		RootId:    "root-post-1",
 		Message:   "@cursor also fix Y",
 	}
+
+	// No HITL workflow in this thread.
+	store.On("GetWorkflowByThread", "root-post-1").Return(nil, nil)
 
 	store.On("GetAgentIDByThread", "root-post-1").Return("agent-123", nil)
 	store.On("GetAgent", "agent-123").Return(&kvstore.AgentRecord{
@@ -565,6 +617,9 @@ func TestMessageHasBeenPosted_MentionInThread_FinishedAgent_LaunchesNew(t *testi
 		RootId:    "root-post-1",
 		Message:   "@cursor fix Y",
 	}
+
+	// No HITL workflow in this thread.
+	store.On("GetWorkflowByThread", "root-post-1").Return(nil, nil)
 
 	// First lookup: thread has agent, but it's finished.
 	store.On("GetAgentIDByThread", "root-post-1").Return("agent-old", nil)
@@ -931,4 +986,281 @@ func TestFormatThread_ChronologicalOrder(t *testing.T) {
 	secondIdx := strings.Index(text, "Second message")
 	assert.True(t, firstIdx < secondIdx, "Posts should be in chronological order")
 	assert.Empty(t, images)
+}
+
+// --- HITL gate tests ---
+
+func TestMessageHasBeenPosted_ContextReviewEnabled_PostsReviewInsteadOfLaunching(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+	p.configuration = &configuration{
+		DefaultRepository:   "org/default-repo",
+		DefaultBranch:       "main",
+		DefaultModel:        "auto",
+		AutoCreatePR:        true,
+		EnableContextReview: true, // HITL enabled.
+		EnablePlanLoop:      false,
+	}
+
+	siteURL := "http://localhost:8065"
+	api.On("GetConfig").Return(&model.Config{
+		ServiceSettings: model.ServiceSettings{
+			SiteURL: &siteURL,
+		},
+	}).Maybe()
+
+	post := &model.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		Message:   "@cursor fix the bug",
+	}
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// :eyes: removed, hourglass added.
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "eyes"
+	})).Return(nil)
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "post-1" && r.EmojiName == "hourglass_flowing_sand"
+	})).Return(nil, nil)
+
+	// SaveWorkflow (called twice: initial + update with context post).
+	store.On("SaveWorkflow", mock.Anything).Return(nil)
+	store.On("SetThreadWorkflow", "post-1", mock.AnythingOfType("string")).Return(nil)
+
+	// CreatePost for the review attachment.
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return p.RootId == "post-1" && p.UserId == "bot-user-id"
+	})).Return(&model.Post{Id: "review-post-1"}, nil)
+
+	// publishWorkflowPhaseChange is called after saving the workflow.
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+
+	p.MessageHasBeenPosted(nil, post)
+
+	// LaunchAgent should NOT be called.
+	cursorClient.AssertNotCalled(t, "LaunchAgent")
+	// SaveWorkflow should be called.
+	store.AssertCalled(t, "SaveWorkflow", mock.Anything)
+}
+
+func TestMessageHasBeenPosted_ContextReviewDisabled_LaunchesDirectly(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+	// EnableContextReview is false by default from setupTestPlugin.
+
+	post := &model.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		Message:   "@cursor fix the bug",
+	}
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	cursorClient.On("LaunchAgent", mock.Anything, mock.Anything).Return(&cursor.Agent{
+		ID:     "agent-123",
+		Status: cursor.AgentStatusCreating,
+	}, nil)
+
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "reply-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+	store.On("SetThreadAgent", "post-1", "agent-123").Return(nil)
+	api.On("PublishWebSocketEvent", "agent_created", mock.Anything, mock.Anything).Return()
+
+	p.MessageHasBeenPosted(nil, post)
+
+	cursorClient.AssertCalled(t, "LaunchAgent", mock.Anything, mock.Anything)
+}
+
+func TestMessageHasBeenPosted_DirectFlag_SkipsBothHITL(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+	p.configuration = &configuration{
+		DefaultRepository:   "org/default-repo",
+		DefaultBranch:       "main",
+		DefaultModel:        "auto",
+		AutoCreatePR:        true,
+		EnableContextReview: true,
+		EnablePlanLoop:      true,
+	}
+
+	post := &model.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		Message:   "@cursor --direct fix the bug",
+	}
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	cursorClient.On("LaunchAgent", mock.Anything, mock.Anything).Return(&cursor.Agent{
+		ID:     "agent-123",
+		Status: cursor.AgentStatusCreating,
+	}, nil)
+
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "reply-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+	store.On("SetThreadAgent", "post-1", "agent-123").Return(nil)
+	api.On("PublishWebSocketEvent", "agent_created", mock.Anything, mock.Anything).Return()
+
+	p.MessageHasBeenPosted(nil, post)
+
+	cursorClient.AssertCalled(t, "LaunchAgent", mock.Anything, mock.Anything)
+}
+
+func TestMessageHasBeenPosted_NoReviewFlag_SkipsContextReviewOnly(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+	p.configuration = &configuration{
+		DefaultRepository:   "org/default-repo",
+		DefaultBranch:       "main",
+		DefaultModel:        "auto",
+		AutoCreatePR:        true,
+		EnableContextReview: true,
+		EnablePlanLoop:      false,
+	}
+
+	post := &model.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		Message:   "@cursor --no-review fix the bug",
+	}
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	cursorClient.On("LaunchAgent", mock.Anything, mock.Anything).Return(&cursor.Agent{
+		ID:     "agent-123",
+		Status: cursor.AgentStatusCreating,
+	}, nil)
+
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "reply-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+	store.On("SetThreadAgent", "post-1", "agent-123").Return(nil)
+	api.On("PublishWebSocketEvent", "agent_created", mock.Anything, mock.Anything).Return()
+
+	p.MessageHasBeenPosted(nil, post)
+
+	// LaunchAgent should be called (context review skipped).
+	cursorClient.AssertCalled(t, "LaunchAgent", mock.Anything, mock.Anything)
+}
+
+func TestHandlePossibleFollowUp_WorkflowReply_IteratesContext(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	store := &mockKVStore{}
+
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.client = pluginapi.NewClient(api, nil)
+	p.kvstore = store
+	p.botUserID = "bot-user-id"
+	p.botUsername = "cursor"
+	p.configuration = &configuration{}
+
+	siteURL := "http://localhost:8065"
+	api.On("GetConfig").Return(&model.Config{
+		ServiceSettings: model.ServiceSettings{
+			SiteURL: &siteURL,
+		},
+	}).Maybe()
+
+	workflow := &kvstore.HITLWorkflow{
+		ID:              "wf-1",
+		UserID:          "user-1",
+		ChannelID:       "ch-1",
+		RootPostID:      "root-1",
+		Repository:      "org/repo",
+		Branch:          "main",
+		Model:           "auto",
+		EnrichedContext: "Original context",
+		Phase:           kvstore.PhaseContextReview,
+	}
+
+	store.On("GetWorkflowByThread", "root-1").Return(workflow, nil)
+
+	// User is the initiator and provides ShouldProcessMessage dependencies.
+	api.On("GetUser", "user-1").Return(&model.User{
+		Id:       "user-1",
+		Username: "testuser",
+	}, nil).Maybe()
+
+	// iterateContext mocks.
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "post-1"}, nil)
+	store.On("SaveWorkflow", mock.Anything).Return(nil)
+
+	post := &model.Post{
+		Id:        "reply-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-1",
+		Message:   "refine this",
+	}
+
+	p.handlePossibleFollowUp(post)
+
+	// iterateContext should update EnrichedContext.
+	assert.Contains(t, workflow.EnrichedContext, "refine this")
+}
+
+func TestHandlePossibleFollowUp_AgentFollowUp_StillWorks(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:        "reply-post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-post-1",
+		Message:   "also fix the tests",
+	}
+
+	// No HITL workflow.
+	store.On("GetWorkflowByThread", "root-post-1").Return(nil, nil)
+
+	// Thread -> agent mapping.
+	store.On("GetAgentIDByThread", "root-post-1").Return("agent-123", nil)
+	store.On("GetAgent", "agent-123").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+		Repository:    "org/repo",
+	}, nil)
+
+	// Eyes reaction.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "reply-post-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// Follow-up API call.
+	cursorClient.On("AddFollowup", mock.Anything, "agent-123", mock.Anything).Return(&cursor.FollowupResponse{ID: "agent-123"}, nil)
+
+	// Confirmation reply.
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return p.RootId == "root-post-1" && p.Message == ":speech_balloon: Follow-up sent to the running agent."
+	})).Return(&model.Post{Id: "reply-2"}, nil)
+
+	p.handlePossibleFollowUp(post)
+
+	cursorClient.AssertCalled(t, "AddFollowup", mock.Anything, "agent-123", mock.Anything)
 }

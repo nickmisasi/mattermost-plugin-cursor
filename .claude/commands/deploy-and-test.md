@@ -1,3 +1,7 @@
+---
+description: "Full development workflow: run Go and webapp tests, build the plugin, deploy to a local Mattermost instance, and verify functionality."
+---
+
 # Deploy and Test the Plugin
 
 This skill covers the full development workflow: running tests, building, deploying, and verifying.

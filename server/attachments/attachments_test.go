@@ -192,3 +192,219 @@ func TestBuildStoppedAttachment(t *testing.T) {
 	assert.Contains(t, att.Text, "[Open in Cursor](https://cursor.com/agents/a1)")
 	assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
 }
+
+func TestBuildContextReviewAttachment(t *testing.T) {
+	pluginURL := "https://mattermost.example.com/plugins/com.mattermost.plugin-cursor"
+	att := BuildContextReviewAttachment(
+		"Enriched context text here",
+		"org/repo", "main", "claude-sonnet",
+		"wf-123", pluginURL, "testuser",
+	)
+
+	assert.Equal(t, ColorYellow, att.Color)
+	assert.Contains(t, att.Title, "@testuser")
+	assert.Contains(t, att.Title, "I've analyzed")
+	assert.Equal(t, "Enriched context text here", att.Text)
+	require.Len(t, att.Fields, 3)
+	assert.Equal(t, "Repo", att.Fields[0].Title)
+	assert.Equal(t, "org/repo", att.Fields[0].Value)
+	assert.Equal(t, "Branch", att.Fields[1].Title)
+	assert.Equal(t, "main", att.Fields[1].Value)
+	assert.Equal(t, "Model", att.Fields[2].Title)
+	assert.Equal(t, "claude-sonnet", att.Fields[2].Value)
+	assert.Contains(t, att.Footer, "Reply in this thread")
+
+	// Buttons
+	require.Len(t, att.Actions, 2)
+
+	acceptBtn := att.Actions[0]
+	assert.Equal(t, "Accept Context", acceptBtn.Name)
+	assert.Equal(t, "good", acceptBtn.Style)
+	require.NotNil(t, acceptBtn.Integration)
+	assert.Equal(t, pluginURL+"/api/v1/actions/hitl-response", acceptBtn.Integration.URL)
+	assert.Equal(t, "accept", acceptBtn.Integration.Context["action"])
+	assert.Equal(t, "context_review", acceptBtn.Integration.Context["phase"])
+	assert.Equal(t, "wf-123", acceptBtn.Integration.Context["workflow_id"])
+
+	rejectBtn := att.Actions[1]
+	assert.Equal(t, "Reject", rejectBtn.Name)
+	assert.Equal(t, "danger", rejectBtn.Style)
+	require.NotNil(t, rejectBtn.Integration)
+	assert.Equal(t, pluginURL+"/api/v1/actions/hitl-response", rejectBtn.Integration.URL)
+	assert.Equal(t, "reject", rejectBtn.Integration.Context["action"])
+	assert.Equal(t, "context_review", rejectBtn.Integration.Context["phase"])
+	assert.Equal(t, "wf-123", rejectBtn.Integration.Context["workflow_id"])
+}
+
+func TestBuildContextAcceptedAttachment(t *testing.T) {
+	att := BuildContextAcceptedAttachment("org/repo", "main", "claude-sonnet", "testuser")
+
+	assert.Equal(t, ColorGreen, att.Color)
+	assert.Contains(t, att.Title, "@testuser")
+	assert.Contains(t, att.Title, "approved")
+	require.Len(t, att.Fields, 3)
+	assert.Empty(t, att.Actions)
+}
+
+func TestBuildContextRejectedAttachment(t *testing.T) {
+	att := BuildContextRejectedAttachment("testuser")
+
+	assert.Equal(t, ColorGrey, att.Color)
+	assert.Contains(t, att.Title, "@testuser")
+	assert.Contains(t, att.Title, "rejected")
+	assert.Empty(t, att.Actions)
+	assert.Empty(t, att.Fields)
+}
+
+// --- Phase 3: Plan loop attachment tests ---
+
+func TestBuildPlanningStatusAttachment(t *testing.T) {
+	t.Run("first iteration", func(t *testing.T) {
+		att := BuildPlanningStatusAttachment("org/repo", "main", "auto", 0)
+
+		assert.Equal(t, ColorBlue, att.Color)
+		assert.Contains(t, att.Title, "Planning agent")
+		assert.Contains(t, att.Title, "analyzing")
+		require.Len(t, att.Fields, 3)
+		assert.Equal(t, "Repo", att.Fields[0].Title)
+		assert.Equal(t, "org/repo", att.Fields[0].Value)
+		assert.Equal(t, "Branch", att.Fields[1].Title)
+		assert.Equal(t, "main", att.Fields[1].Value)
+		assert.Equal(t, "Model", att.Fields[2].Title)
+		assert.Equal(t, "auto", att.Fields[2].Value)
+		assert.Empty(t, att.Actions)
+	})
+
+	t.Run("second iteration shows pass number", func(t *testing.T) {
+		att := BuildPlanningStatusAttachment("org/repo", "main", "auto", 2)
+
+		assert.Contains(t, att.Title, "pass 2")
+		assert.Contains(t, att.Title, "revising")
+	})
+}
+
+func TestBuildPlanReviewAttachment(t *testing.T) {
+	pluginURL := "https://mattermost.example.com/plugins/com.mattermost.plugin-cursor"
+
+	t.Run("first iteration", func(t *testing.T) {
+		att := BuildPlanReviewAttachment(
+			"### Summary\nThe plan details.",
+			"org/repo", "main", "auto",
+			"wf-123", pluginURL, "testuser", 1,
+		)
+
+		assert.Equal(t, ColorYellow, att.Color)
+		assert.Contains(t, att.Title, "@testuser")
+		assert.Contains(t, att.Title, "implementation plan")
+		assert.NotContains(t, att.Title, "revised")
+		assert.Equal(t, "### Summary\nThe plan details.", att.Text)
+		require.Len(t, att.Fields, 3)
+		assert.Contains(t, att.Footer, "Reply in this thread")
+
+		// Buttons
+		require.Len(t, att.Actions, 2)
+
+		acceptBtn := att.Actions[0]
+		assert.Equal(t, "Accept Plan", acceptBtn.Name)
+		assert.Equal(t, "good", acceptBtn.Style)
+		require.NotNil(t, acceptBtn.Integration)
+		assert.Equal(t, pluginURL+"/api/v1/actions/hitl-response", acceptBtn.Integration.URL)
+		assert.Equal(t, "accept", acceptBtn.Integration.Context["action"])
+		assert.Equal(t, "plan_review", acceptBtn.Integration.Context["phase"])
+		assert.Equal(t, "wf-123", acceptBtn.Integration.Context["workflow_id"])
+
+		rejectBtn := att.Actions[1]
+		assert.Equal(t, "Reject", rejectBtn.Name)
+		assert.Equal(t, "danger", rejectBtn.Style)
+		require.NotNil(t, rejectBtn.Integration)
+		assert.Equal(t, pluginURL+"/api/v1/actions/hitl-response", rejectBtn.Integration.URL)
+		assert.Equal(t, "reject", rejectBtn.Integration.Context["action"])
+		assert.Equal(t, "plan_review", rejectBtn.Integration.Context["phase"])
+		assert.Equal(t, "wf-123", rejectBtn.Integration.Context["workflow_id"])
+	})
+
+	t.Run("second iteration shows revised title", func(t *testing.T) {
+		att := BuildPlanReviewAttachment(
+			"Updated plan.",
+			"org/repo", "main", "auto",
+			"wf-123", pluginURL, "testuser", 2,
+		)
+
+		assert.Contains(t, att.Title, "revised")
+		assert.Contains(t, att.Title, "v2")
+	})
+
+	t.Run("third iteration shows v3", func(t *testing.T) {
+		att := BuildPlanReviewAttachment(
+			"Third plan.",
+			"org/repo", "main", "auto",
+			"wf-123", pluginURL, "testuser", 3,
+		)
+
+		assert.Contains(t, att.Title, "v3")
+	})
+
+	t.Run("truncates long plans at 14000 chars", func(t *testing.T) {
+		longPlan := ""
+		for range 1500 {
+			longPlan += "0123456789" // 15000 chars total
+		}
+
+		att := BuildPlanReviewAttachment(
+			longPlan,
+			"org/repo", "main", "auto",
+			"wf-123", pluginURL, "testuser", 1,
+		)
+
+		assert.True(t, len(att.Text) < len(longPlan))
+		assert.Contains(t, att.Text, "plan truncated")
+	})
+}
+
+func TestBuildPlanAcceptedAttachment(t *testing.T) {
+	t.Run("first iteration", func(t *testing.T) {
+		att := BuildPlanAcceptedAttachment("testuser", 1)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Contains(t, att.Title, "@testuser")
+		assert.Contains(t, att.Title, "approved")
+		assert.Contains(t, att.Title, "launching implementation agent")
+		assert.NotContains(t, att.Title, "(v")
+		assert.Empty(t, att.Actions)
+	})
+
+	t.Run("second iteration shows version", func(t *testing.T) {
+		att := BuildPlanAcceptedAttachment("testuser", 2)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Contains(t, att.Title, "(v2)")
+		assert.Contains(t, att.Title, "@testuser")
+		assert.Contains(t, att.Title, "approved")
+	})
+
+	t.Run("third iteration shows v3", func(t *testing.T) {
+		att := BuildPlanAcceptedAttachment("testuser", 3)
+		assert.Contains(t, att.Title, "(v3)")
+	})
+}
+
+func TestBuildPlanRejectedAttachment(t *testing.T) {
+	att := BuildPlanRejectedAttachment("testuser")
+
+	assert.Equal(t, ColorGrey, att.Color)
+	assert.Contains(t, att.Title, "@testuser")
+	assert.Contains(t, att.Title, "rejected")
+	assert.Contains(t, att.Title, "cancelled")
+	assert.Empty(t, att.Actions)
+}
+
+func TestBuildImplementerLaunchAttachment(t *testing.T) {
+	att := BuildImplementerLaunchAttachment("a1", "org/repo", "main", "auto")
+
+	assert.Equal(t, ColorBlue, att.Color)
+	assert.Contains(t, att.Title, "Implementation agent launched")
+	require.Len(t, att.Fields, 3)
+	assert.Contains(t, att.Text, "[Open in Cursor](https://cursor.com/agents/a1)")
+	assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
+	assert.Empty(t, att.Actions)
+}

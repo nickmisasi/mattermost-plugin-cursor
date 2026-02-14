@@ -19,7 +19,13 @@ const (
 	prefixPRURLIdx     = "prurlidx:"     // Index for PR URL -> agent ID lookup
 	prefixBranchIdx    = "branchidx:"    // Index for branch name -> agent ID lookup
 	prefixDelivery     = "ghdelivery:"   // Idempotency key for GitHub webhook deliveries
+	prefixHITL         = "hitl:"         // HITL workflow records
+	prefixHITLAgent    = "hitlagent:"    // Reverse index: Cursor agent ID -> workflow ID
 )
+
+// hitlThreadPrefix is prepended to workflow IDs when stored in thread mappings
+// to distinguish them from bare agent IDs.
+const hitlThreadPrefix = "hitl:"
 
 type store struct {
 	client *pluginapi.Client
@@ -241,6 +247,83 @@ func (s *store) MarkDeliveryProcessed(deliveryID string) error {
 	_, err := s.client.KV.Set(prefixDelivery+deliveryID, true, pluginapi.SetExpiry(24*time.Hour))
 	if err != nil {
 		return errors.Wrap(err, "failed to mark delivery processed")
+	}
+	return nil
+}
+
+func (s *store) GetWorkflow(workflowID string) (*HITLWorkflow, error) {
+	var workflow HITLWorkflow
+	err := s.client.KV.Get(prefixHITL+workflowID, &workflow)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get workflow")
+	}
+	if workflow.ID == "" {
+		return nil, nil // Not found
+	}
+	return &workflow, nil
+}
+
+func (s *store) SaveWorkflow(workflow *HITLWorkflow) error {
+	_, err := s.client.KV.Set(prefixHITL+workflow.ID, workflow)
+	if err != nil {
+		return errors.Wrap(err, "failed to save workflow")
+	}
+	return nil
+}
+
+func (s *store) DeleteWorkflow(workflowID string) error {
+	err := s.client.KV.Delete(prefixHITL + workflowID)
+	if err != nil {
+		return errors.Wrap(err, "failed to delete workflow")
+	}
+	return nil
+}
+
+func (s *store) GetWorkflowByThread(rootPostID string) (*HITLWorkflow, error) {
+	var value string
+	err := s.client.KV.Get(prefixThread+rootPostID, &value)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get thread mapping")
+	}
+	if value == "" {
+		return nil, nil
+	}
+	if !strings.HasPrefix(value, hitlThreadPrefix) {
+		return nil, nil // This is a bare agent ID, not a workflow reference
+	}
+	workflowID := strings.TrimPrefix(value, hitlThreadPrefix)
+	return s.GetWorkflow(workflowID)
+}
+
+func (s *store) GetWorkflowByAgent(cursorAgentID string) (string, error) {
+	var workflowID string
+	err := s.client.KV.Get(prefixHITLAgent+cursorAgentID, &workflowID)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to get agent-to-workflow mapping")
+	}
+	return workflowID, nil
+}
+
+func (s *store) SetThreadWorkflow(rootPostID string, workflowID string) error {
+	_, err := s.client.KV.Set(prefixThread+rootPostID, hitlThreadPrefix+workflowID)
+	if err != nil {
+		return errors.Wrap(err, "failed to set thread workflow mapping")
+	}
+	return nil
+}
+
+func (s *store) SetAgentWorkflow(cursorAgentID string, workflowID string) error {
+	_, err := s.client.KV.Set(prefixHITLAgent+cursorAgentID, workflowID)
+	if err != nil {
+		return errors.Wrap(err, "failed to set agent-to-workflow mapping")
+	}
+	return nil
+}
+
+func (s *store) DeleteAgentWorkflow(cursorAgentID string) error {
+	err := s.client.KV.Delete(prefixHITLAgent + cursorAgentID)
+	if err != nil {
+		return errors.Wrap(err, "failed to delete agent-to-workflow mapping")
 	}
 	return nil
 }

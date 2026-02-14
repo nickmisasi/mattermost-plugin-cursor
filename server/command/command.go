@@ -269,8 +269,8 @@ func (h *Handler) executeList(args *model.CommandArgs) (*model.CommandResponse, 
 
 	var sb strings.Builder
 	sb.WriteString("#### Your Cursor Agents\n\n")
-	sb.WriteString("| ID | Repository | Status | Link |\n")
-	sb.WriteString("|:---|:-----------|:-------|:-----|\n")
+	sb.WriteString("| ID | Repository | Status | Phase | Link |\n")
+	sb.WriteString("|:---|:-----------|:-------|:------|:-----|\n")
 
 	for _, la := range localAgents {
 		status := la.Status
@@ -281,12 +281,22 @@ func (h *Handler) executeList(args *model.CommandArgs) (*model.CommandResponse, 
 				_ = h.deps.Store.SaveAgent(la)
 			}
 		}
+
+		// Check for workflow phase.
+		phaseStr := ""
+		workflowID, _ := h.deps.Store.GetWorkflowByAgent(la.CursorAgentID)
+		if workflowID != "" {
+			if wf, _ := h.deps.Store.GetWorkflow(workflowID); wf != nil {
+				phaseStr = wf.Phase
+			}
+		}
+
 		shortID := la.CursorAgentID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
-		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s %s | [View](https://cursor.com/agents/%s) |\n",
-			shortID, la.Repository, statusToEmoji(status), status, la.CursorAgentID))
+		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s %s | %s | [View](https://cursor.com/agents/%s) |\n",
+			shortID, la.Repository, statusToEmoji(status), status, phaseStr, la.CursorAgentID))
 	}
 
 	return ephemeralResponse(sb.String()), nil
@@ -335,36 +345,68 @@ func (h *Handler) executeStatus(args *model.CommandArgs, params []string) (*mode
 		sb.WriteString(fmt.Sprintf(" | [Go to thread](/%s/pl/%s)", localAgent.ChannelID, localAgent.PostID))
 	}
 
+	// Check if the agent belongs to an HITL workflow.
+	if localAgent != nil {
+		workflowID, _ := h.deps.Store.GetWorkflowByAgent(localAgent.CursorAgentID)
+		if workflowID != "" {
+			workflow, _ := h.deps.Store.GetWorkflow(workflowID)
+			if workflow != nil {
+				sb.WriteString(fmt.Sprintf("\n\n**HITL Workflow:** `%s`\n", workflowID))
+				sb.WriteString(fmt.Sprintf("| **Workflow Phase** | %s %s |\n", phaseToEmoji(workflow.Phase), workflow.Phase))
+				if workflow.PlanIterationCount > 0 {
+					sb.WriteString(fmt.Sprintf("| **Plan Iteration** | v%d |\n", workflow.PlanIterationCount+1))
+				}
+			}
+		}
+	}
+
 	return ephemeralResponse(sb.String()), nil
 }
 
 func (h *Handler) executeCancel(args *model.CommandArgs, params []string) (*model.CommandResponse, error) {
 	if len(params) == 0 {
-		return ephemeralResponse("Usage: `/cursor cancel <agentID>`\nGet agent IDs from `/cursor list`."), nil
+		return ephemeralResponse("Usage: `/cursor cancel <agentID or workflowID>`\nGet IDs from `/cursor list` or `/cursor status`."), nil
 	}
 
 	if h.deps.CursorClientFn() == nil {
 		return ephemeralResponse(errNoCursorClient), nil
 	}
 
-	agentID := params[0]
+	id := params[0]
 
-	localAgent, err := h.deps.Store.GetAgent(agentID)
+	// First, try to find a workflow by this ID.
+	workflow, _ := h.deps.Store.GetWorkflow(id)
+	if workflow != nil {
+		return h.cancelWorkflow(args, workflow)
+	}
+
+	// Not a workflow ID -- try as an agent ID.
+	localAgent, err := h.deps.Store.GetAgent(id)
 	if err != nil || localAgent == nil {
-		return ephemeralResponse(fmt.Sprintf("Agent `%s` not found.", agentID)), nil
+		return ephemeralResponse(fmt.Sprintf("Agent or workflow `%s` not found.", id)), nil
 	}
 	if localAgent.UserID != args.UserId {
 		return ephemeralResponse("You can only cancel your own agents."), nil
 	}
 
+	// Check if this agent belongs to a workflow.
+	workflowID, _ := h.deps.Store.GetWorkflowByAgent(id)
+	if workflowID != "" {
+		wf, _ := h.deps.Store.GetWorkflow(workflowID)
+		if wf != nil && wf.UserID == args.UserId {
+			return h.cancelWorkflow(args, wf)
+		}
+	}
+
+	// No workflow -- cancel agent directly.
 	if localAgent.Status == "FINISHED" || localAgent.Status == "FAILED" || localAgent.Status == "STOPPED" {
-		return ephemeralResponse(fmt.Sprintf("Agent `%s` is already %s.", agentID, localAgent.Status)), nil
+		return ephemeralResponse(fmt.Sprintf("Agent `%s` is already %s.", id, localAgent.Status)), nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, stopErr := h.deps.CursorClientFn().StopAgent(ctx, agentID)
+	_, stopErr := h.deps.CursorClientFn().StopAgent(ctx, id)
 	if stopErr != nil {
 		return ephemeralResponse(formatAPIError("Failed to cancel agent", stopErr)), nil
 	}
@@ -377,7 +419,7 @@ func (h *Handler) executeCancel(args *model.CommandArgs, params []string) (*mode
 			UserId:    h.deps.BotUserID,
 			ChannelId: localAgent.ChannelID,
 			RootId:    localAgent.PostID,
-			Message:   fmt.Sprintf(":no_entry_sign: Agent `%s` was cancelled by <@%s>.", agentID, args.UserId),
+			Message:   fmt.Sprintf(":no_entry_sign: Agent `%s` was cancelled by <@%s>.", id, args.UserId),
 		}
 		_ = h.deps.Client.Post.CreatePost(cancelPost)
 
@@ -393,7 +435,73 @@ func (h *Handler) executeCancel(args *model.CommandArgs, params []string) (*mode
 		})
 	}
 
-	return ephemeralResponse(fmt.Sprintf("Agent `%s` has been cancelled.", agentID)), nil
+	return ephemeralResponse(fmt.Sprintf("Agent `%s` has been cancelled.", id)), nil
+}
+
+func (h *Handler) cancelWorkflow(args *model.CommandArgs, workflow *kvstore.HITLWorkflow) (*model.CommandResponse, error) {
+	if workflow.UserID != args.UserId {
+		return ephemeralResponse("You can only cancel your own workflows."), nil
+	}
+
+	if workflow.Phase == kvstore.PhaseRejected || workflow.Phase == kvstore.PhaseComplete {
+		return ephemeralResponse(fmt.Sprintf("Workflow is already %s.", workflow.Phase)), nil
+	}
+
+	// Stop any active Cursor agents associated with this workflow.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if workflow.PlannerAgentID != "" {
+		if agent, _ := h.deps.Store.GetAgent(workflow.PlannerAgentID); agent != nil {
+			if !cursor.AgentStatus(agent.Status).IsTerminal() {
+				_, _ = h.deps.CursorClientFn().StopAgent(ctx, workflow.PlannerAgentID)
+				agent.Status = string(cursor.AgentStatusStopped)
+				_ = h.deps.Store.SaveAgent(agent)
+			}
+		}
+	}
+
+	if workflow.ImplementerAgentID != "" {
+		if agent, _ := h.deps.Store.GetAgent(workflow.ImplementerAgentID); agent != nil {
+			if !cursor.AgentStatus(agent.Status).IsTerminal() {
+				_, _ = h.deps.CursorClientFn().StopAgent(ctx, workflow.ImplementerAgentID)
+				agent.Status = string(cursor.AgentStatusStopped)
+				_ = h.deps.Store.SaveAgent(agent)
+			}
+		}
+	}
+
+	// Update workflow to rejected.
+	workflow.Phase = kvstore.PhaseRejected
+	workflow.UpdatedAt = time.Now().UnixMilli()
+	_ = h.deps.Store.SaveWorkflow(workflow)
+
+	// Update reactions on trigger post.
+	if workflow.TriggerPostID != "" {
+		_ = h.deps.Client.Post.RemoveReaction(&model.Reaction{
+			UserId:    h.deps.BotUserID,
+			PostId:    workflow.TriggerPostID,
+			EmojiName: "hourglass_flowing_sand",
+		})
+		_ = h.deps.Client.Post.AddReaction(&model.Reaction{
+			UserId:    h.deps.BotUserID,
+			PostId:    workflow.TriggerPostID,
+			EmojiName: "no_entry_sign",
+		})
+	}
+
+	// Post cancellation message in thread.
+	if workflow.RootPostID != "" {
+		cancelPost := &model.Post{
+			UserId:    h.deps.BotUserID,
+			ChannelId: workflow.ChannelID,
+			RootId:    workflow.RootPostID,
+			Message:   fmt.Sprintf(":no_entry_sign: Workflow cancelled by <@%s>.", args.UserId),
+		}
+		_ = h.deps.Client.Post.CreatePost(cancelPost)
+	}
+
+	return ephemeralResponse(fmt.Sprintf("Workflow `%s` has been cancelled.", workflow.ID)), nil
 }
 
 func (h *Handler) executeSettings(args *model.CommandArgs) (*model.CommandResponse, error) {
@@ -459,6 +567,22 @@ func (h *Handler) executeSettings(args *model.CommandArgs) (*model.CommandRespon
 					Optional:    true,
 					Default:     safeUserModel(userSettings),
 				},
+				{
+					DisplayName: "Enable Context Review",
+					Name:        "user_enable_context_review",
+					Type:        "bool",
+					HelpText:    "When enabled, the bot shows enriched context for your approval before launching agents. Leave unchecked to use the global default. Per-mention override: --no-review or review=off",
+					Optional:    true,
+					Default:     safeUserEnableContextReview(userSettings),
+				},
+				{
+					DisplayName: "Enable Plan Loop",
+					Name:        "user_enable_plan_loop",
+					Type:        "bool",
+					HelpText:    "When enabled, a planning agent produces an implementation plan for your review before the main agent starts. Leave unchecked to use the global default. Per-mention override: --no-plan or plan=off",
+					Optional:    true,
+					Default:     safeUserEnablePlanLoop(userSettings),
+				},
 			},
 			State: fmt.Sprintf("%s|%s", args.ChannelId, args.UserId),
 		},
@@ -509,16 +633,22 @@ func (h *Handler) executeHelp() *model.CommandResponse {
 ` + "- `@cursor with <model>, <prompt>` - Specify AI model" + `
 ` + "- `@cursor [repo=org/repo, branch=dev, model=opus] <prompt>` - Inline options" + `
 
+**HITL Verification Flags:**
+` + "- `@cursor --direct <prompt>` - Skip both review stages (legacy behavior)" + `
+` + "- `@cursor --no-review <prompt>` - Skip context review, keep plan loop" + `
+` + "- `@cursor --no-plan <prompt>` - Skip plan loop, keep context review" + `
+
 **Management:**
 ` + "- `/cursor list` - List your active agents with status" + `
 ` + "- `/cursor status <agentID>` - Detailed status of a specific agent" + `
-` + "- `/cursor cancel <agentID>` - Cancel a running agent" + `
+` + "- `/cursor cancel <agentID or workflowID>` - Cancel an agent or HITL workflow" + `
 
 **Configuration:**
-` + "- `/cursor settings` - Configure channel and user defaults" + `
+` + "- `/cursor settings` - Configure channel and user defaults (including HITL toggles)" + `
 ` + "- `/cursor models` - List available AI models" + `
 
 **In Threads:**
+- Reply in a review thread to refine context or plan
 - Reply in an agent thread to send a follow-up to the running agent
 ` + "- Use `@cursor agent <prompt>` in a thread to force a new agent"
 
@@ -545,6 +675,25 @@ func statusToEmoji(status string) string {
 		return ":x:"
 	case "STOPPED":
 		return ":no_entry_sign:"
+	default:
+		return ":grey_question:"
+	}
+}
+
+func phaseToEmoji(phase string) string {
+	switch phase {
+	case kvstore.PhaseContextReview:
+		return ":eyes:"
+	case kvstore.PhasePlanning:
+		return ":hourglass:"
+	case kvstore.PhasePlanReview:
+		return ":clipboard:"
+	case kvstore.PhaseImplementing:
+		return ":gear:"
+	case kvstore.PhaseRejected:
+		return ":no_entry_sign:"
+	case kvstore.PhaseComplete:
+		return ":white_check_mark:"
 	default:
 		return ":grey_question:"
 	}
@@ -625,4 +774,24 @@ func safeUserModel(s *kvstore.UserSettings) string {
 		return ""
 	}
 	return s.DefaultModel
+}
+
+func safeUserEnableContextReview(s *kvstore.UserSettings) string {
+	if s == nil || s.EnableContextReview == nil {
+		return ""
+	}
+	if *s.EnableContextReview {
+		return "true"
+	}
+	return "false"
+}
+
+func safeUserEnablePlanLoop(s *kvstore.UserSettings) string {
+	if s == nil || s.EnablePlanLoop == nil {
+		return ""
+	}
+	if *s.EnablePlanLoop {
+		return "true"
+	}
+	return "false"
 }
