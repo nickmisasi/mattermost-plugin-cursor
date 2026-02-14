@@ -131,7 +131,7 @@ func (p *Plugin) OnActivate() error {
 		Username:    botUsername,
 		DisplayName: botDisplayName,
 		Description: botDescription,
-	})
+	}, pluginapi.ProfileImagePath("assets/cursor-icon.png"))
 	if err != nil {
 		return errors.Wrap(err, "failed to ensure bot account")
 	}

@@ -143,10 +143,11 @@ func (p *Plugin) handleMentionInThread(post *model.Post, parsed *parser.ParsedMe
 		}
 		// If planning, check if the planner agent is actually still running.
 		if workflow.Phase == kvstore.PhasePlanning {
-			if p.isPlannerStale(workflow) {
+			switch {
+			case p.isPlannerStale(workflow):
 				// Planner is no longer active -- clean up the stuck workflow.
 				p.rejectWorkflowForAgent(workflow.PlannerAgentID)
-			} else if workflow.UserID == post.UserId {
+			case workflow.UserID == post.UserId:
 				// Enqueue the parsed prompt as pending feedback for when the planner finishes.
 				feedbackText := strings.TrimSpace(parsed.Prompt)
 				if feedbackText != "" {
@@ -165,7 +166,7 @@ func (p *Plugin) handleMentionInThread(post *model.Post, parsed *parser.ParsedMe
 					p.postBotReply(post, "Got it. I'll apply your feedback when the current planning pass finishes.")
 				}
 				return
-			} else {
+			default:
 				p.postBotReply(post, "A planning agent is currently running. Please wait for the plan to be ready for review.")
 				return
 			}

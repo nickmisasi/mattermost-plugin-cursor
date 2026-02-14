@@ -329,6 +329,7 @@ describe('reducer', () => {
         });
         expect(state.agents['planner-1'].workflow_phase).toBe('implementing');
         expect(state.agents['planner-1'].plan_iteration_count).toBe(1);
+
         // Unrelated agent should not be touched.
         expect(state.agents['other-agent'].workflow_phase).toBeUndefined();
     });
@@ -375,6 +376,7 @@ describe('reducer', () => {
                 updated_at: 7000,
             },
         });
+
         // agents ref should be preserved (no unnecessary copy).
         expect(state.agents).toBe(prevState.agents);
     });
