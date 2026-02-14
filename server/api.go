@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/attachments"
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 )
 
@@ -390,12 +391,21 @@ func (p *Plugin) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 		p.addReaction(record.TriggerPostID, "no_entry_sign")
 	}
 	if record.PostID != "" {
-		_, _ = p.API.CreatePost(&model.Post{
+		cancelAttachment := attachments.BuildStoppedAttachment(
+			agentID, record.Repository, record.Branch, record.Model,
+		)
+		cancelAttachment.Title = "Agent was cancelled via the dashboard."
+
+		cancelPost := &model.Post{
 			UserId:    p.getBotUserID(),
 			ChannelId: record.ChannelID,
 			RootId:    record.PostID,
-			Message:   ":no_entry_sign: Agent was cancelled via the dashboard.",
-		})
+		}
+		model.ParseSlackAttachment(cancelPost, []*model.SlackAttachment{cancelAttachment})
+		_, _ = p.API.CreatePost(cancelPost)
+
+		// Also update the original bot reply post to reflect cancellation.
+		p.updateBotReplyWithAttachment(record.BotReplyPostID, cancelAttachment)
 	}
 
 	// Publish WebSocket event.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/attachments"
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
@@ -108,7 +109,14 @@ func (p *Plugin) pollSingleAgent(record *kvstore.AgentRecord) {
 }
 
 func (p *Plugin) handleAgentRunning(record *kvstore.AgentRecord) {
-	p.postBotReplyToThread(record, ":gear: Agent is now running...")
+	// Update the original bot reply to show running status (preserving metadata).
+	runningAttachment := attachments.BuildRunningAttachment(
+		record.CursorAgentID, record.Repository, record.Branch, record.Model,
+	)
+	p.updateBotReplyWithAttachment(record.BotReplyPostID, runningAttachment)
+
+	// Post a short text notification to trigger thread follow.
+	p.postBotReplyToThread(record, "Agent is now running...")
 }
 
 func (p *Plugin) handleAgentFinished(record *kvstore.AgentRecord, agent *cursor.Agent) {
@@ -116,24 +124,20 @@ func (p *Plugin) handleAgentFinished(record *kvstore.AgentRecord, agent *cursor.
 	p.removeReaction(record.TriggerPostID, "hourglass_flowing_sand")
 	p.addReaction(record.TriggerPostID, "white_check_mark")
 
-	// Step 2: Build completion message.
-	message := ":white_check_mark: **Agent finished!**"
+	finishedAttachment := attachments.BuildFinishedAttachment(
+		record.CursorAgentID, record.Repository, record.Branch, record.Model,
+		agent.Summary, agent.Target.PrURL,
+	)
 
-	// Include summary if available.
-	if agent.Summary != "" {
-		message += "\n\n> " + agent.Summary
-	}
+	// Step 2: Update the original bot reply post with the finished attachment.
+	p.updateBotReplyWithAttachment(record.BotReplyPostID, finishedAttachment)
 
-	// Include PR link if available.
+	// Step 3: Post a short text notification to trigger thread follow.
+	msg := "Agent finished!"
 	if agent.Target.PrURL != "" {
-		message += fmt.Sprintf("\n\n:link: [View Pull Request](%s)", agent.Target.PrURL)
+		msg = fmt.Sprintf("Agent finished! [View PR](%s)", agent.Target.PrURL)
 	}
-
-	// Always include Cursor link.
-	message += fmt.Sprintf("\n\n[Open in Cursor](https://cursor.com/agents/%s)", record.CursorAgentID)
-
-	// Step 3: Post completion message in thread.
-	p.postBotReplyToThread(record, message)
+	p.postBotReplyToThread(record, msg)
 
 	// Step 4: Update record with PR URL.
 	if agent.Target.PrURL != "" {
@@ -146,14 +150,15 @@ func (p *Plugin) handleAgentFailed(record *kvstore.AgentRecord, agent *cursor.Ag
 	p.removeReaction(record.TriggerPostID, "hourglass_flowing_sand")
 	p.addReaction(record.TriggerPostID, "x")
 
-	// Step 2: Post failure message.
-	message := ":x: **Agent failed.**"
-	if agent.Summary != "" {
-		message += "\n\n> " + agent.Summary
-	}
-	message += fmt.Sprintf("\n\n[Open in Cursor](https://cursor.com/agents/%s)", record.CursorAgentID)
+	failedAttachment := attachments.BuildFailedAttachment(
+		record.CursorAgentID, record.Repository, record.Branch, record.Model, agent.Summary,
+	)
 
-	p.postBotReplyToThread(record, message)
+	// Step 2: Update the original bot reply post with the failed attachment.
+	p.updateBotReplyWithAttachment(record.BotReplyPostID, failedAttachment)
+
+	// Step 3: Post a short text notification to trigger thread follow.
+	p.postBotReplyToThread(record, "Agent failed.")
 }
 
 func (p *Plugin) handleAgentStopped(record *kvstore.AgentRecord) {
@@ -161,9 +166,15 @@ func (p *Plugin) handleAgentStopped(record *kvstore.AgentRecord) {
 	p.removeReaction(record.TriggerPostID, "hourglass_flowing_sand")
 	p.addReaction(record.TriggerPostID, "no_entry_sign")
 
-	// Step 2: Post stopped message.
-	message := fmt.Sprintf(":no_entry_sign: **Agent was stopped.**\n\n[Open in Cursor](https://cursor.com/agents/%s)", record.CursorAgentID)
-	p.postBotReplyToThread(record, message)
+	stoppedAttachment := attachments.BuildStoppedAttachment(
+		record.CursorAgentID, record.Repository, record.Branch, record.Model,
+	)
+
+	// Step 2: Update the original bot reply post with the stopped attachment.
+	p.updateBotReplyWithAttachment(record.BotReplyPostID, stoppedAttachment)
+
+	// Step 3: Post a short text notification to trigger thread follow.
+	p.postBotReplyToThread(record, "Agent was stopped.")
 }
 
 // postBotReplyToThread posts a message in the agent's thread.
@@ -177,6 +188,31 @@ func (p *Plugin) postBotReplyToThread(record *kvstore.AgentRecord, message strin
 	if appErr != nil {
 		p.API.LogError("Failed to post bot reply to thread",
 			"agentID", record.CursorAgentID,
+			"error", appErr.Error(),
+		)
+	}
+}
+
+// updateBotReplyWithAttachment fetches the bot's initial reply post and replaces
+// its content with the given SlackAttachment. This updates the "launch" card to
+// reflect the terminal status so users see the final state without scrolling.
+func (p *Plugin) updateBotReplyWithAttachment(botReplyPostID string, attachment *model.SlackAttachment) {
+	if botReplyPostID == "" {
+		return
+	}
+	originalPost, appErr := p.API.GetPost(botReplyPostID)
+	if appErr != nil {
+		p.API.LogError("Failed to get bot reply post for attachment update",
+			"postID", botReplyPostID,
+			"error", appErr.Error(),
+		)
+		return
+	}
+	originalPost.Message = ""
+	model.ParseSlackAttachment(originalPost, []*model.SlackAttachment{attachment})
+	if _, appErr := p.API.UpdatePost(originalPost); appErr != nil {
+		p.API.LogError("Failed to update bot reply post with attachment",
+			"postID", botReplyPostID,
 			"error", appErr.Error(),
 		)
 	}

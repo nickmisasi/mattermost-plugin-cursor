@@ -21,6 +21,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/attachments"
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/parser"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
@@ -52,6 +53,9 @@ func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *model.Post) {
 		return
 	}
 
+	// Acknowledge the mention immediately with :eyes: reaction.
+	p.addReaction(post.Id, "eyes")
+
 	p.logDebug("Bot mention detected",
 		"post_id", post.Id,
 		"channel_id", post.ChannelId,
@@ -63,6 +67,7 @@ func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *model.Post) {
 	// 4. Parse the mention message.
 	parsed := parser.Parse(post.Message, botMention)
 	if parsed == nil {
+		p.removeReaction(post.Id, "eyes")
 		// User just typed "@cursor" with no prompt -- post help text.
 		p.postBotReply(post, "Please provide a prompt. Example: `@cursor fix the login bug`")
 		return
@@ -155,11 +160,13 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 
 	// Step 2: Validate -- repo is required.
 	if repo == "" {
+		p.removeReaction(post.Id, "eyes")
 		p.postBotReply(post, "No repository specified. Set a default with `/cursor settings` or specify one: `@cursor in org/repo, fix the bug`")
 		return
 	}
 
-	// Step 3: Add hourglass reaction to the user's triggering post.
+	// Step 3: Swap :eyes: -> :hourglass_flowing_sand: to indicate launch in progress.
+	p.removeReaction(post.Id, "eyes")
 	p.addReaction(post.Id, "hourglass_flowing_sand")
 
 	// Step 4: Enrich the prompt with thread context if this is a thread reply.
@@ -238,16 +245,15 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 		rootID = post.RootId
 	}
 
+	attachment := attachments.BuildLaunchAttachment(agent.ID, repo, branch, modelName)
 	replyPost := &model.Post{
 		UserId:    p.getBotUserID(),
 		ChannelId: post.ChannelId,
 		RootId:    rootID,
-		Message:   fmt.Sprintf(":rocket: Starting a background agent...\n\n[Open in Cursor](https://cursor.com/agents/%s)", agent.ID),
-		Props: model.StringInterface{
-			"cursor_agent_id":     agent.ID,
-			"cursor_agent_status": string(agent.Status),
-		},
 	}
+	model.ParseSlackAttachment(replyPost, []*model.SlackAttachment{attachment})
+	replyPost.AddProp("cursor_agent_id", agent.ID)
+	replyPost.AddProp("cursor_agent_status", string(agent.Status))
 	createdReply, appErr := p.API.CreatePost(replyPost)
 	if appErr != nil {
 		p.API.LogError("Failed to create bot reply", "error", appErr.Error())
@@ -260,21 +266,21 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 	}
 	now := time.Now().UnixMilli()
 	agentRecord := &kvstore.AgentRecord{
-		CursorAgentID: agent.ID,
-		Status:        string(agent.Status),
-		TriggerPostID: post.Id,
-		PostID:        rootID,
-		ChannelID:     post.ChannelId,
-		UserID:        post.UserId,
-		Repository:    repo,
-		Branch:        branch,
-		TargetBranch:  launchReq.Target.BranchName,
-		Prompt:        parsed.Prompt,
-		Model:         modelName,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		CursorAgentID:  agent.ID,
+		Status:         string(agent.Status),
+		TriggerPostID:  post.Id,
+		PostID:         rootID,
+		ChannelID:      post.ChannelId,
+		UserID:         post.UserId,
+		Repository:     repo,
+		Branch:         branch,
+		TargetBranch:   launchReq.Target.BranchName,
+		Prompt:         parsed.Prompt,
+		Model:          modelName,
+		BotReplyPostID: botReplyID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
-	_ = botReplyID // stored for reference but not needed in current record structure
 
 	if err := p.kvstore.SaveAgent(agentRecord); err != nil {
 		p.API.LogError("Failed to save agent record", "error", err.Error())

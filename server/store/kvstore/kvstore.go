@@ -2,21 +2,22 @@ package kvstore
 
 // AgentRecord stores the plugin's state for a tracked Cursor agent.
 type AgentRecord struct {
-	CursorAgentID string `json:"cursorAgentId"`
-	PostID        string `json:"postId"`        // The bot's reply post (thread root)
-	TriggerPostID string `json:"triggerPostId"` // The user's original @mention post
-	ChannelID     string `json:"channelId"`
-	UserID        string `json:"userId"`
-	Status        string `json:"status"`
-	Repository    string `json:"repository"`
-	Branch        string `json:"branch"`
-	TargetBranch  string `json:"targetBranch,omitempty"` // Cursor-created branch (e.g., "cursor/fix-login")
-	PrURL         string `json:"prUrl"`
-	Prompt        string `json:"prompt"`
-	Model         string `json:"model"`
-	Summary       string `json:"summary"`
-	CreatedAt     int64  `json:"createdAt"` // Unix millis
-	UpdatedAt     int64  `json:"updatedAt"` // Unix millis
+	CursorAgentID  string `json:"cursorAgentId"`
+	PostID         string `json:"postId"`                   // The bot's reply post (thread root)
+	TriggerPostID  string `json:"triggerPostId"`            // The user's original @mention post
+	BotReplyPostID string `json:"botReplyPostId,omitempty"` // The bot's initial reply (for updating on terminal status)
+	ChannelID      string `json:"channelId"`
+	UserID         string `json:"userId"`
+	Status         string `json:"status"`
+	Repository     string `json:"repository"`
+	Branch         string `json:"branch"`
+	TargetBranch   string `json:"targetBranch,omitempty"` // Cursor-created branch (e.g., "cursor/fix-login")
+	PrURL          string `json:"prUrl"`
+	Prompt         string `json:"prompt"`
+	Model          string `json:"model"`
+	Summary        string `json:"summary"`
+	CreatedAt      int64  `json:"createdAt"` // Unix millis
+	UpdatedAt      int64  `json:"updatedAt"` // Unix millis
 }
 
 // ChannelSettings stores per-channel defaults.

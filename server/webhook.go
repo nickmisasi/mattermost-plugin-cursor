@@ -236,25 +236,25 @@ func (p *Plugin) handlePullRequestEvent(w http.ResponseWriter, body []byte) {
 		return
 	}
 
-	var message string
+	prTitle := fmt.Sprintf("PR #%d: %s", event.PullRequest.Number, event.PullRequest.Title)
 
 	if event.PullRequest.Merged {
-		message = fmt.Sprintf(
-			":rocket: **PR #%d has been merged!**\n[%s](%s)",
-			event.PullRequest.Number,
-			event.PullRequest.Title,
-			event.PullRequest.HTMLURL,
-		)
+		mergedAttachment := &model.SlackAttachment{
+			Color:     "#3DB887", // green
+			Title:     prTitle,
+			TitleLink: event.PullRequest.HTMLURL,
+			Text:      "This pull request has been merged.",
+		}
+		p.postThreadNotificationWithAttachment(agent, mergedAttachment)
 	} else {
-		message = fmt.Sprintf(
-			":wastebasket: **PR #%d was closed** without merging.\n[%s](%s)",
-			event.PullRequest.Number,
-			event.PullRequest.Title,
-			event.PullRequest.HTMLURL,
-		)
+		closedAttachment := &model.SlackAttachment{
+			Color:     "#8B8FA7", // grey
+			Title:     prTitle,
+			TitleLink: event.PullRequest.HTMLURL,
+			Text:      "This pull request was closed without merging.",
+		}
+		p.postThreadNotificationWithAttachment(agent, closedAttachment)
 	}
-
-	p.postThreadNotification(agent, message)
 
 	// Update reaction on the trigger post for merged PRs.
 	if event.PullRequest.Merged {
@@ -298,48 +298,44 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 	prNumber := event.PullRequest.Number
 	reviewURL := event.Review.HTMLURL
 
-	var message string
+	prTitle := fmt.Sprintf("PR #%d", prNumber)
+
+	var reviewAttachment *model.SlackAttachment
 
 	switch event.Review.State {
 	case reviewStateApproved:
-		message = fmt.Sprintf(
-			":tada: **PR #%d was approved** by [%s](%s)",
-			prNumber,
-			reviewer,
-			reviewURL,
-		)
+		reviewAttachment = &model.SlackAttachment{
+			Color:     "#3DB887", // green
+			Title:     fmt.Sprintf("%s approved by %s", prTitle, reviewer),
+			TitleLink: reviewURL,
+		}
 	case reviewStateChangesRequested:
 		bodyText := truncateText(event.Review.Body, 200)
-		message = fmt.Sprintf(
-			":memo: **[%s](%s) requested changes** on PR #%d",
-			reviewer,
-			reviewURL,
-			prNumber,
-		)
-		if bodyText != "" {
-			message += fmt.Sprintf("\n> %s", bodyText)
+		reviewAttachment = &model.SlackAttachment{
+			Color:     "#D24B4E", // red (changes requested)
+			Title:     fmt.Sprintf("%s: %s requested changes", prTitle, reviewer),
+			TitleLink: reviewURL,
+			Text:      bodyText,
 		}
 	case reviewStateCommented:
 		bodyText := truncateText(event.Review.Body, 200)
-		// Only post for non-empty review comments (empty body = inline-only comments).
 		if bodyText == "" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		message = fmt.Sprintf(
-			":speech_balloon: **[%s](%s) commented** on PR #%d\n> %s",
-			reviewer,
-			reviewURL,
-			prNumber,
-			bodyText,
-		)
+		reviewAttachment = &model.SlackAttachment{
+			Color:     "#2389D7", // blue
+			Title:     fmt.Sprintf("%s: %s commented", prTitle, reviewer),
+			TitleLink: reviewURL,
+			Text:      bodyText,
+		}
 	default:
 		p.API.LogDebug("Unhandled review state", "state", event.Review.State)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	p.postThreadNotification(agent, message)
+	p.postThreadNotificationWithAttachment(agent, reviewAttachment)
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -370,22 +366,23 @@ func (p *Plugin) findAgentForPR(pr ghPullRequest) *kvstore.AgentRecord {
 
 // --- Helpers ---
 
-// postThreadNotification posts a message in the agent's Mattermost thread.
-func (p *Plugin) postThreadNotification(agent *kvstore.AgentRecord, message string) {
+// postThreadNotificationWithAttachment posts a SlackAttachment in the agent's Mattermost thread.
+func (p *Plugin) postThreadNotificationWithAttachment(agent *kvstore.AgentRecord, attachment *model.SlackAttachment) {
 	if agent.PostID == "" {
 		p.API.LogWarn("Cannot post thread notification: no root post ID",
 			"agent_id", agent.CursorAgentID)
 		return
 	}
 
-	_, appErr := p.API.CreatePost(&model.Post{
+	post := &model.Post{
 		UserId:    p.getBotUserID(),
 		ChannelId: agent.ChannelID,
 		RootId:    agent.PostID,
-		Message:   message,
-	})
-	if appErr != nil {
-		p.API.LogError("Failed to post GitHub notification in thread",
+	}
+	model.ParseSlackAttachment(post, []*model.SlackAttachment{attachment})
+
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		p.API.LogError("Failed to post GitHub notification attachment in thread",
 			"error", appErr.Error(),
 			"agent_id", agent.CursorAgentID,
 			"root_post_id", agent.PostID,

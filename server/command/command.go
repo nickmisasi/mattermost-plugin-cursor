@@ -13,6 +13,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/attachments"
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/parser"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
@@ -201,11 +202,14 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 		return ephemeralResponse(formatAPIError("Failed to launch agent", err)), nil
 	}
 
+	launchAttachment := attachments.BuildLaunchAttachment(agent.ID, repo, branch, cursorModel)
 	botPost := &model.Post{
 		UserId:    h.deps.BotUserID,
 		ChannelId: args.ChannelId,
-		Message:   fmt.Sprintf(":rocket: Starting a background agent...\n\n[Open in Cursor](https://cursor.com/agents/%s)", agent.ID),
 	}
+	model.ParseSlackAttachment(botPost, []*model.SlackAttachment{launchAttachment})
+	botPost.AddProp("cursor_agent_id", agent.ID)
+	botPost.AddProp("cursor_agent_status", string(agent.Status))
 	if err := h.deps.Client.Post.CreatePost(botPost); err != nil {
 		return ephemeralResponse("Failed to post agent status message."), nil
 	}
@@ -218,19 +222,20 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 
 	now := time.Now().UnixMilli()
 	_ = h.deps.Store.SaveAgent(&kvstore.AgentRecord{
-		CursorAgentID: agent.ID,
-		PostID:        botPost.Id,
-		TriggerPostID: botPost.Id,
-		ChannelID:     args.ChannelId,
-		UserID:        args.UserId,
-		Status:        string(agent.Status),
-		Repository:    repo,
-		Branch:        branch,
-		TargetBranch:  launchReq.Target.BranchName,
-		Prompt:        parsed.Prompt,
-		Model:         cursorModel,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		CursorAgentID:  agent.ID,
+		PostID:         botPost.Id,
+		TriggerPostID:  botPost.Id,
+		ChannelID:      args.ChannelId,
+		UserID:         args.UserId,
+		Status:         string(agent.Status),
+		Repository:     repo,
+		Branch:         branch,
+		TargetBranch:   launchReq.Target.BranchName,
+		Prompt:         parsed.Prompt,
+		Model:          cursorModel,
+		BotReplyPostID: botPost.Id,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	})
 	_ = h.deps.Store.SetThreadAgent(botPost.Id, agent.ID)
 

@@ -97,15 +97,45 @@
     margin-top: 4px;
 }
 
-.cursor-agent-card-pr {
+/* --- Agent Card: Metadata & Links --- */
+
+.cursor-agent-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+}
+
+.cursor-agent-card-badge {
     display: inline-block;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-family: monospace;
+    line-height: 1.4;
+    border-radius: 3px;
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: rgba(var(--center-channel-color-rgb), 0.72);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+
+.cursor-agent-card-links {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     margin-top: 8px;
+}
+
+.cursor-agent-card-link {
     font-size: 12px;
     color: var(--link-color);
     text-decoration: none;
 }
 
-.cursor-agent-card-pr:hover {
+.cursor-agent-card-link:hover {
     text-decoration: underline;
 }
 
@@ -169,6 +199,30 @@
     margin-top: 16px;
     padding-top: 16px;
     border-top: 1px solid rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+/* --- Agent Detail: Status Bar --- */
+
+.cursor-agent-detail-status-bar {
+    height: 3px;
+    border-radius: 2px 2px 0 0;
+    margin: -16px -16px 16px -16px;
+}
+
+.cursor-agent-detail-status-bar--blue {
+    background-color: var(--button-bg);
+}
+
+.cursor-agent-detail-status-bar--green {
+    background-color: var(--online-indicator);
+}
+
+.cursor-agent-detail-status-bar--red {
+    background-color: var(--dnd-indicator);
+}
+
+.cursor-agent-detail-status-bar--grey {
+    background-color: rgba(var(--center-channel-color-rgb), 0.3);
 }
 
 /* --- Textarea --- */

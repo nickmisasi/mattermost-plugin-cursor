@@ -198,12 +198,11 @@ func TestWebhook_PRMerged(t *testing.T) {
 	store.On("MarkDeliveryProcessed", "delivery-pr-merged").Return(nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(agent, nil)
 
-	// Expect thread notification post.
+	// Expect thread notification attachment post: green color for merged PR.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-post-1" &&
 			p.ChannelId == "ch-1" &&
-			p.Message != "" &&
-			containsSubstring(p.Message, "PR #42 has been merged")
+			hasAttachmentWithColor(p, "#3DB887")
 	})).Return(&model.Post{Id: "notification-1"}, nil)
 
 	// Expect reaction swap on trigger post.
@@ -259,8 +258,11 @@ func TestWebhook_PRClosedNotMerged(t *testing.T) {
 	store.On("MarkDeliveryProcessed", "delivery-pr-closed").Return(nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/99").Return(agent, nil)
 
+	// Notification attachment post: grey color for closed-without-merge PR.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
-		return containsSubstring(p.Message, "PR #99 was closed")
+		return p.RootId == "root-post-2" &&
+			p.ChannelId == "ch-2" &&
+			hasAttachmentWithColor(p, "#8B8FA7")
 	})).Return(&model.Post{Id: "notification-2"}, nil)
 
 	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
@@ -364,10 +366,11 @@ func TestWebhook_ReviewApproved(t *testing.T) {
 	store.On("MarkDeliveryProcessed", "delivery-rv-approved").Return(nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/77").Return(agent, nil)
 
+	// Review approved attachment: green color for approved.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-post-rv" &&
-			containsSubstring(p.Message, "PR #77 was approved") &&
-			containsSubstring(p.Message, "reviewer-1")
+			hasAttachmentWithColor(p, "#3DB887") &&
+			hasAttachmentWithTitle(p, "approved")
 	})).Return(&model.Post{Id: "rv-notification-1"}, nil)
 
 	req := makeWebhookRequest(t, "pull_request_review", "delivery-rv-approved", body, sig)
@@ -411,11 +414,11 @@ func TestWebhook_ReviewChangesRequested(t *testing.T) {
 	store.On("MarkDeliveryProcessed", "delivery-rv-changes").Return(nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/88").Return(agent, nil)
 
+	// Changes requested attachment: red color for changes_requested.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-post-cr" &&
-			containsSubstring(p.Message, "requested changes") &&
-			containsSubstring(p.Message, "senior-dev") &&
-			containsSubstring(p.Message, "error handling")
+			hasAttachmentWithColor(p, "#D24B4E") &&
+			hasAttachmentWithTitle(p, "requested changes")
 	})).Return(&model.Post{Id: "cr-notification-1"}, nil)
 
 	req := makeWebhookRequest(t, "pull_request_review", "delivery-rv-changes", body, sig)
@@ -459,11 +462,11 @@ func TestWebhook_ReviewCommented(t *testing.T) {
 	store.On("MarkDeliveryProcessed", "delivery-rv-commented").Return(nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/66").Return(agent, nil)
 
+	// Comment notification attachment: blue color for comment.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
 		return p.RootId == "root-post-cm" &&
-			containsSubstring(p.Message, "commented") &&
-			containsSubstring(p.Message, "commenter") &&
-			containsSubstring(p.Message, "nit")
+			hasAttachmentWithColor(p, "#2389D7") &&
+			hasAttachmentWithTitle(p, "commented")
 	})).Return(&model.Post{Id: "cm-notification-1"}, nil)
 
 	req := makeWebhookRequest(t, "pull_request_review", "delivery-rv-commented", body, sig)
@@ -656,22 +659,6 @@ func TestTruncateText_LongReviewBody(t *testing.T) {
 	assert.Len(t, result, 200)
 	assert.True(t, len(result) <= 200)
 	assert.True(t, result[len(result)-3:] == "...")
-}
-
-// --- Test helpers ---
-
-// containsSubstring is a test helper to check substrings.
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // mockPluginAPI type alias for the plugintest.API used in setupTestPlugin.
