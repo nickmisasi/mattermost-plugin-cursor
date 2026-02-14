@@ -57,6 +57,20 @@ func (p *Plugin) pollSingleAgent(record *kvstore.AgentRecord) {
 		return
 	}
 
+	// Step 1b: Re-read the record from KV to pick up any concurrent changes
+	// (e.g., cancel handler may have set status to STOPPED since our ListActiveAgents call).
+	freshRecord, err := p.kvstore.GetAgent(record.CursorAgentID)
+	if err != nil || freshRecord == nil {
+		return
+	}
+	record = freshRecord
+
+	// If the record was already moved to a terminal state by another handler
+	// (e.g., cancelled via dashboard), skip further processing.
+	if cursor.AgentStatus(record.Status).IsTerminal() {
+		return
+	}
+
 	p.logDebug("Polled agent status",
 		"agent_id", record.CursorAgentID,
 		"stored_status", record.Status,

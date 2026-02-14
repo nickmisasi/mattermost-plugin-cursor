@@ -146,6 +146,25 @@ func (p *Plugin) handleMentionInThread(post *model.Post, parsed *parser.ParsedMe
 			if p.isPlannerStale(workflow) {
 				// Planner is no longer active -- clean up the stuck workflow.
 				p.rejectWorkflowForAgent(workflow.PlannerAgentID)
+			} else if workflow.UserID == post.UserId {
+				// Enqueue the parsed prompt as pending feedback for when the planner finishes.
+				feedbackText := strings.TrimSpace(parsed.Prompt)
+				if feedbackText != "" {
+					if workflow.PendingFeedback != "" {
+						workflow.PendingFeedback += "\n\n" + feedbackText
+					} else {
+						workflow.PendingFeedback = feedbackText
+					}
+					workflow.UpdatedAt = time.Now().UnixMilli()
+					if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+						p.API.LogError("Failed to save pending feedback from mention",
+							"workflow_id", workflow.ID,
+							"error", err.Error(),
+						)
+					}
+					p.postBotReply(post, "Got it. I'll apply your feedback when the current planning pass finishes.")
+				}
+				return
 			} else {
 				p.postBotReply(post, "A planning agent is currently running. Please wait for the plan to be ready for review.")
 				return

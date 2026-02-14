@@ -75,23 +75,45 @@ export default function reducer(state: PluginState = initialState, action: Plugi
             workflows: {...state.workflows, [action.data.id]: action.data},
         };
     case WORKFLOW_PHASE_CHANGED: {
-        const existing = state.workflows[action.data.workflow_id];
-        if (!existing) {
-            return state;
-        }
-        return {
-            ...state,
-            workflows: {
-                ...state.workflows,
-                [action.data.workflow_id]: {
-                    ...existing,
-                    phase: action.data.phase,
-                    planner_agent_id: action.data.planner_agent_id || existing.planner_agent_id,
-                    implementer_agent_id: action.data.implementer_agent_id || existing.implementer_agent_id,
+        const existingWf = state.workflows[action.data.workflow_id];
+
+        // Update the workflow object if it exists in state.
+        const updatedWorkflows = existingWf ? {
+            ...state.workflows,
+            [action.data.workflow_id]: {
+                ...existingWf,
+                phase: action.data.phase,
+                planner_agent_id: action.data.planner_agent_id || existingWf.planner_agent_id,
+                implementer_agent_id: action.data.implementer_agent_id || existingWf.implementer_agent_id,
+                plan_iteration_count: action.data.plan_iteration_count,
+                updated_at: action.data.updated_at,
+            },
+        } : state.workflows;
+
+        // Also propagate the phase to any agents that belong to this workflow,
+        // so the AgentCard PhaseBadge updates without a full refetch.
+        // Match by workflow_id OR by the planner/implementer agent IDs from
+        // the event (handles agents that arrived via agent_created without workflow_id).
+        const {planner_agent_id: plannerID, implementer_agent_id: implID, workflow_id: wfID} = action.data;
+        const updatedAgents = {...state.agents};
+        let agentsChanged = false;
+        for (const [id, agent] of Object.entries(updatedAgents)) {
+            if (agent.workflow_id === wfID || id === plannerID || id === implID) {
+                updatedAgents[id] = {
+                    ...agent,
+                    workflow_id: wfID,
+                    workflow_phase: action.data.phase,
                     plan_iteration_count: action.data.plan_iteration_count,
                     updated_at: action.data.updated_at,
-                },
-            },
+                };
+                agentsChanged = true;
+            }
+        }
+
+        return {
+            ...state,
+            workflows: updatedWorkflows,
+            agents: agentsChanged ? updatedAgents : state.agents,
         };
     }
     default:
