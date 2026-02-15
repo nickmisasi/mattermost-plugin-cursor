@@ -51,11 +51,11 @@ type Plugin struct {
 	// router is the HTTP router for handling API requests.
 	router *mux.Router
 
+	// configurationLock synchronizes access to the configuration, cursorClient, botUserID, and activatedAt.
+	configurationLock sync.RWMutex
+
 	// activatedAt records when OnActivate completed, used for uptime reporting.
 	activatedAt time.Time
-
-	// configurationLock synchronizes access to the configuration, cursorClient, and botUserID.
-	configurationLock sync.RWMutex
 
 	// configuration is the active plugin configuration.
 	configuration *configuration
@@ -119,6 +119,20 @@ func (p *Plugin) setBotUsername(username string) {
 	p.botUsername = username
 }
 
+// getActivatedAt returns the activation timestamp under read lock.
+func (p *Plugin) getActivatedAt() time.Time {
+	p.configurationLock.RLock()
+	defer p.configurationLock.RUnlock()
+	return p.activatedAt
+}
+
+// setActivatedAt sets the activation timestamp under write lock.
+func (p *Plugin) setActivatedAt(t time.Time) {
+	p.configurationLock.Lock()
+	defer p.configurationLock.Unlock()
+	p.activatedAt = t
+}
+
 const (
 	botUsername    = "cursor"
 	botDisplayName = "Cursor"
@@ -127,7 +141,6 @@ const (
 
 // OnActivate is invoked when the plugin is activated.
 func (p *Plugin) OnActivate() error {
-	p.activatedAt = time.Now()
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
 	// Ensure the bot account exists.
@@ -191,6 +204,8 @@ func (p *Plugin) OnActivate() error {
 		return errors.Wrap(cronErr, "failed to schedule agent status poller")
 	}
 	p.backgroundJob = job
+
+	p.setActivatedAt(time.Now())
 
 	return nil
 }

@@ -102,7 +102,7 @@ func (p *Plugin) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	response := HealthResponse{
 		PluginVersion: "0.1.0",
-		ServerUptime:  time.Since(p.activatedAt).Truncate(time.Second).String(),
+		ServerUptime:  time.Since(p.getActivatedAt()).Truncate(time.Second).String(),
 	}
 
 	// 1. Validate configuration.
