@@ -343,3 +343,22 @@ func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 		&model.WebsocketBroadcast{UserId: record.UserID},
 	)
 }
+
+// cleanupStaleAgents removes agents that have been in CREATING or RUNNING state
+// for longer than the given duration, treating them as stuck.
+func (p *Plugin) cleanupStaleAgents(maxAge time.Duration) int {
+	agents, _ := p.kvstore.ListActiveAgents()
+
+	cleaned := 0
+	for _, agent := range agents {
+		createdAt := time.Unix(0, agent.CreatedAt*int64(time.Millisecond))
+		if time.Since(createdAt) > maxAge {
+			agent.Status = "STOPPED"
+			p.kvstore.SaveAgent(agent)
+			p.kvstore.DeleteAgent(agent.CursorAgentID)
+			cleaned++
+		}
+	}
+
+	return cleaned
+}
