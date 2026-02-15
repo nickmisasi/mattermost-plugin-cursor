@@ -141,10 +141,35 @@ func (p *Plugin) handleMentionInThread(post *model.Post, parsed *parser.ParsedMe
 			p.iteratePlan(workflow, parsed.Prompt)
 			return
 		}
-		// If planning, ignore the mention (planner is running).
+		// If planning, check if the planner agent is actually still running.
 		if workflow.Phase == kvstore.PhasePlanning {
-			p.postBotReply(post, "A planning agent is currently running. Please wait for the plan to be ready for review.")
-			return
+			switch {
+			case p.isPlannerStale(workflow):
+				// Planner is no longer active -- clean up the stuck workflow.
+				p.rejectWorkflowForAgent(workflow.PlannerAgentID)
+			case workflow.UserID == post.UserId:
+				// Enqueue the parsed prompt as pending feedback for when the planner finishes.
+				feedbackText := strings.TrimSpace(parsed.Prompt)
+				if feedbackText != "" {
+					if workflow.PendingFeedback != "" {
+						workflow.PendingFeedback += "\n\n" + feedbackText
+					} else {
+						workflow.PendingFeedback = feedbackText
+					}
+					workflow.UpdatedAt = time.Now().UnixMilli()
+					if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+						p.API.LogError("Failed to save pending feedback from mention",
+							"workflow_id", workflow.ID,
+							"error", err.Error(),
+						)
+					}
+					p.postBotReply(post, "Got it. I'll apply your feedback when the current planning pass finishes.")
+				}
+				return
+			default:
+				p.postBotReply(post, "A planning agent is currently running. Please wait for the plan to be ready for review.")
+				return
+			}
 		}
 		// If implementing, fall through to the agent check below.
 	}
@@ -358,6 +383,7 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	agentRecord.Description = p.generateDescription(promptText)
 
 	if err := p.kvstore.SaveAgent(agentRecord); err != nil {
 		p.API.LogError("Failed to save agent record", "error", err.Error())
@@ -537,6 +563,14 @@ func (p *Plugin) postBotReply(post *model.Post, message string) {
 const (
 	maxThreadImages    = 5
 	maxThreadImageSize = 10 * 1024 * 1024 // 10MB total
+
+	descriptionPrompt = `You are a ticket title generator. Your ONLY output is a single short noun phrase (5-10 words) summarizing the coding task. No explanation, no reasoning, no quotes, no punctuation at the end. Just the title.
+
+Examples of correct output:
+Fix back button overlap on settings page
+Add dark mode toggle to sidebar
+Refactor user authentication middleware
+Update payment processing error handling`
 
 	enrichmentPrompt = `You are a context formatter. Given a Mattermost thread conversation, extract and clearly describe the task or issue being discussed. Your output will be given to a coding AI agent that has full access to the codebase.
 
@@ -756,6 +790,53 @@ func (p *Plugin) enrichPromptViaBridge(threadText string) string {
 		return ""
 	}
 
+	return result
+}
+
+// generateDescription uses the bridge client to create a short AI-generated task title.
+// Returns empty string on any failure (graceful degradation).
+func (p *Plugin) generateDescription(contextText string) string {
+	if p.bridgeClient == nil {
+		return ""
+	}
+
+	agents, err := p.bridgeClient.GetAgents("")
+	if err != nil {
+		p.API.LogWarn("Bridge client: failed to discover agents for description", "error", err.Error())
+		return ""
+	}
+	if len(agents) == 0 {
+		return ""
+	}
+
+	var agentID string
+	for _, agent := range agents {
+		if agent.IsDefault {
+			agentID = agent.ID
+			break
+		}
+	}
+	if agentID == "" {
+		agentID = agents[0].ID
+	}
+
+	result, err := p.bridgeClient.AgentCompletion(agentID, bridgeclient.CompletionRequest{
+		Posts: []bridgeclient.Post{
+			{Role: "system", Message: descriptionPrompt},
+			{Role: "user", Message: contextText},
+		},
+		MaxGeneratedTokens: 2048,
+	})
+	if err != nil {
+		p.API.LogWarn("Bridge client: description generation failed", "error", err.Error())
+		return ""
+	}
+
+	result = strings.TrimSpace(result)
+	runes := []rune(result)
+	if len(runes) > 100 {
+		result = string(runes[:100])
+	}
 	return result
 }
 

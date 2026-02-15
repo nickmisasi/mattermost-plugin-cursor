@@ -57,6 +57,20 @@ func (p *Plugin) pollSingleAgent(record *kvstore.AgentRecord) {
 		return
 	}
 
+	// Step 1b: Re-read the record from KV to pick up any concurrent changes
+	// (e.g., cancel handler may have set status to STOPPED since our ListActiveAgents call).
+	freshRecord, err := p.kvstore.GetAgent(record.CursorAgentID)
+	if err != nil || freshRecord == nil {
+		return
+	}
+	record = freshRecord
+
+	// If the record was already moved to a terminal state by another handler
+	// (e.g., cancelled via dashboard), skip further processing.
+	if cursor.AgentStatus(record.Status).IsTerminal() {
+		return
+	}
+
 	p.logDebug("Polled agent status",
 		"agent_id", record.CursorAgentID,
 		"stored_status", record.Status,
@@ -315,15 +329,16 @@ func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 	p.API.PublishWebSocketEvent(
 		"agent_created",
 		map[string]any{
-			"agent_id":   record.CursorAgentID,
-			"status":     record.Status,
-			"repository": record.Repository,
-			"branch":     record.Branch,
-			"prompt":     record.Prompt,
-			"channel_id": record.ChannelID,
-			"post_id":    record.PostID,
-			"cursor_url": fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
-			"created_at": fmt.Sprintf("%d", record.CreatedAt),
+			"agent_id":    record.CursorAgentID,
+			"status":      record.Status,
+			"repository":  record.Repository,
+			"branch":      record.Branch,
+			"prompt":      record.Prompt,
+			"description": record.Description,
+			"channel_id":  record.ChannelID,
+			"post_id":     record.PostID,
+			"cursor_url":  fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
+			"created_at":  fmt.Sprintf("%d", record.CreatedAt),
 		},
 		&model.WebsocketBroadcast{UserId: record.UserID},
 	)

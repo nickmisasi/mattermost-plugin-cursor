@@ -91,6 +91,7 @@ func TestPoller_StatusUnchanged(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:     "agent-1",
 		Status: cursor.AgentStatusRunning,
@@ -117,6 +118,7 @@ func TestPoller_CreatingToRunning(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:     "agent-1",
 		Status: cursor.AgentStatusRunning,
@@ -153,6 +155,7 @@ func TestPoller_RunningToFinished(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:      "agent-1",
@@ -203,6 +206,7 @@ func TestPoller_RunningToFailed(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:      "agent-1",
@@ -250,6 +254,7 @@ func TestPoller_RunningToStopped(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:     "agent-1",
@@ -327,6 +332,8 @@ func TestPoller_MultipleAgents(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return(records, nil)
+	store.On("GetAgent", "agent-1").Return(records[0], nil)
+	store.On("GetAgent", "agent-2").Return(records[1], nil)
 
 	// agent-1: unchanged
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
@@ -372,6 +379,44 @@ func TestPoller_NilCursorClient(t *testing.T) {
 	store.AssertNotCalled(t, "SaveAgent")
 }
 
+func TestPoller_SkipsCancelledAgent(t *testing.T) {
+	// Simulates the race: ListActiveAgents loaded the agent as RUNNING,
+	// but the cancel handler has since set it to STOPPED in KV.
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	staleRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "RUNNING",
+		TriggerPostID: "trigger-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+	}
+
+	// The cancel handler already updated the record in KV to STOPPED.
+	freshRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "STOPPED",
+		TriggerPostID: "trigger-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{staleRecord}, nil)
+	store.On("GetAgent", "agent-1").Return(freshRecord, nil)
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:     "agent-1",
+		Status: cursor.AgentStatusFinished, // Cursor says FINISHED, but we already cancelled locally
+	}, nil)
+
+	p.pollAgentStatuses()
+
+	// The poller should skip this agent because the fresh record is terminal.
+	api.AssertNotCalled(t, "AddReaction")
+	api.AssertNotCalled(t, "RemoveReaction")
+	api.AssertNotCalled(t, "CreatePost")
+	store.AssertNotCalled(t, "SaveAgent")
+}
+
 // --- Phase 3: Workflow-aware poller routing tests ---
 
 func TestPoller_PlannerFinished_RoutesToWorkflow(t *testing.T) {
@@ -388,6 +433,7 @@ func TestPoller_PlannerFinished_RoutesToWorkflow(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "planner-1").Return(record, nil)
 	cursorClient.On("GetAgent", mock.Anything, "planner-1").Return(&cursor.Agent{
 		ID:     "planner-1",
 		Status: cursor.AgentStatusFinished,
@@ -448,6 +494,7 @@ func TestPoller_ImplementerFinished_NormalHandling(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "impl-1").Return(record, nil)
 	cursorClient.On("GetAgent", mock.Anything, "impl-1").Return(&cursor.Agent{
 		ID:      "impl-1",
 		Status:  cursor.AgentStatusFinished,
@@ -496,6 +543,7 @@ func TestPoller_NonWorkflowAgent_NormalHandling(t *testing.T) {
 	}
 
 	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:      "agent-1",
 		Status:  cursor.AgentStatusFinished,

@@ -57,6 +57,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
     const history = useHistory();
     const [followupText, setFollowupText] = useState('');
     const isActive = agent.status === 'RUNNING' || agent.status === 'CREATING';
+    const isAborted = agent.status === 'STOPPED' || agent.status === 'FAILED';
     const workflow = useSelector((state: GlobalState) => getWorkflowForAgent(state, agent.id));
 
     // Fetch full workflow details on mount if we have a workflow_id but no workflow in state
@@ -92,7 +93,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                     </button>
                 </div>
 
-                {workflow && (
+                {workflow && !(isAborted && workflow.phase !== 'rejected' && workflow.phase !== 'complete') && (
                     <PhaseProgress
                         phase={workflow.phase}
                         planIterationCount={workflow.plan_iteration_count}
@@ -104,7 +105,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                 <div className='cursor-agent-detail-header'>
                     <StatusBadge status={agent.status}/>
                     <span className='cursor-agent-detail-status-text'>{agent.status}</span>
-                    {workflow && <PhaseBadge phase={workflow.phase}/>}
+                    {workflow && !(isAborted && workflow.phase !== 'rejected' && workflow.phase !== 'complete') && <PhaseBadge phase={workflow.phase}/>}
                 </div>
 
                 <div className='cursor-agent-detail-section'>
@@ -126,10 +127,10 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                     </div>
                 )}
 
-                {agent.prompt && (
+                {(agent.description || agent.prompt) && (
                     <div className='cursor-agent-detail-section'>
-                        <div className='cursor-agent-detail-label'>{'Prompt'}</div>
-                        <div className='cursor-agent-detail-value'>{agent.prompt}</div>
+                        <div className='cursor-agent-detail-label'>{'Description'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.description || agent.prompt}</div>
                     </div>
                 )}
 

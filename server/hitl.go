@@ -323,6 +323,14 @@ func (p *Plugin) launchPlannerAgent(workflow *kvstore.HITLWorkflow) error {
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
+	descCtx := workflow.ApprovedContext
+	if descCtx == "" {
+		descCtx = workflow.EnrichedContext
+	}
+	if descCtx == "" {
+		descCtx = workflow.OriginalPrompt
+	}
+	agentRecord.Description = p.generateDescription(descCtx)
 
 	if err := p.kvstore.SaveAgent(agentRecord); err != nil {
 		p.API.LogError("Failed to save planner agent record",
@@ -408,7 +416,12 @@ func (p *Plugin) handlePlannerFinished(workflow *kvstore.HITLWorkflow, agent *cu
 	}
 
 	if agent.Status == cursor.AgentStatusStopped {
-		// Planner was stopped (e.g., user cancelled). Don't post plan review.
+		// Planner was stopped (e.g., user cancelled). Mark workflow as rejected
+		// so the thread is freed up for new agents.
+		workflow.Phase = kvstore.PhaseRejected
+		workflow.UpdatedAt = time.Now().UnixMilli()
+		_ = p.kvstore.SaveWorkflow(workflow)
+		p.publishWorkflowPhaseChange(workflow)
 		return
 	}
 
@@ -729,6 +742,14 @@ func (p *Plugin) launchImplementerFromWorkflow(workflow *kvstore.HITLWorkflow) {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	descCtx := workflow.ApprovedContext
+	if descCtx == "" {
+		descCtx = workflow.EnrichedContext
+	}
+	if descCtx == "" {
+		descCtx = workflow.OriginalPrompt
+	}
+	agentRecord.Description = p.generateDescription(descCtx)
 	if err := p.kvstore.SaveAgent(agentRecord); err != nil {
 		p.API.LogError("Failed to save agent record", "error", err.Error())
 	}
@@ -760,6 +781,53 @@ func (p *Plugin) launchImplementerFromWorkflow(workflow *kvstore.HITLWorkflow) {
 
 	// Publish WebSocket event.
 	p.publishAgentCreated(agentRecord)
+}
+
+// isPlannerStale checks if a workflow's planner agent is stuck (stopped or failed)
+// while the workflow is still in planning phase. FINISHED is NOT stale -- it means
+// the poller hasn't extracted the plan yet and will transition to plan_review shortly.
+func (p *Plugin) isPlannerStale(workflow *kvstore.HITLWorkflow) bool {
+	if workflow.PlannerAgentID == "" {
+		return true
+	}
+	record, err := p.kvstore.GetAgent(workflow.PlannerAgentID)
+	if err != nil || record == nil {
+		return true
+	}
+	status := cursor.AgentStatus(record.Status)
+	return status == cursor.AgentStatusStopped || status == cursor.AgentStatusFailed
+}
+
+// rejectWorkflowForAgent looks up the HITL workflow associated with an agent
+// and transitions it to rejected if it's still in a non-terminal phase.
+// Called when an agent is cancelled or archived via the dashboard.
+func (p *Plugin) rejectWorkflowForAgent(agentID string) {
+	workflowID, err := p.kvstore.GetWorkflowByAgent(agentID)
+	if err != nil || workflowID == "" {
+		return
+	}
+
+	workflow, err := p.kvstore.GetWorkflow(workflowID)
+	if err != nil || workflow == nil {
+		return
+	}
+
+	// Only transition non-terminal workflows.
+	if workflow.Phase == kvstore.PhaseRejected || workflow.Phase == kvstore.PhaseComplete {
+		return
+	}
+
+	workflow.Phase = kvstore.PhaseRejected
+	workflow.UpdatedAt = time.Now().UnixMilli()
+	if err := p.kvstore.SaveWorkflow(workflow); err != nil {
+		p.API.LogError("Failed to reject workflow for cancelled agent",
+			"agent_id", agentID,
+			"workflow_id", workflow.ID,
+			"error", err.Error(),
+		)
+		return
+	}
+	p.publishWorkflowPhaseChange(workflow)
 }
 
 // rejectWorkflow cancels a workflow at the given phase.

@@ -306,4 +306,78 @@ describe('reducer', () => {
         expect(state.workflows['wf-1'].implementer_agent_id).toBe('impl-agent-1');
         expect(state.workflows['wf-1'].phase).toBe('implementing');
     });
+
+    it('WORKFLOW_PHASE_CHANGED propagates phase to agents with matching workflow_id', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {
+                'planner-1': makeAgent({id: 'planner-1', workflow_id: 'wf-1', workflow_phase: 'plan_review'}),
+                'other-agent': makeAgent({id: 'other-agent'}),
+            },
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1', phase: 'plan_review'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'wf-1',
+                phase: 'implementing',
+                planner_agent_id: 'planner-1',
+                implementer_agent_id: 'impl-1',
+                plan_iteration_count: 1,
+                updated_at: 5000,
+            },
+        });
+        expect(state.agents['planner-1'].workflow_phase).toBe('implementing');
+        expect(state.agents['planner-1'].plan_iteration_count).toBe(1);
+
+        // Unrelated agent should not be touched.
+        expect(state.agents['other-agent'].workflow_phase).toBeUndefined();
+    });
+
+    it('WORKFLOW_PHASE_CHANGED associates agents by planner/implementer ID even without workflow_id', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {
+                'impl-1': makeAgent({id: 'impl-1'}), // no workflow_id
+            },
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1', phase: 'plan_review'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'wf-1',
+                phase: 'implementing',
+                planner_agent_id: '',
+                implementer_agent_id: 'impl-1',
+                plan_iteration_count: 1,
+                updated_at: 6000,
+            },
+        });
+        expect(state.agents['impl-1'].workflow_id).toBe('wf-1');
+        expect(state.agents['impl-1'].workflow_phase).toBe('implementing');
+    });
+
+    it('WORKFLOW_PHASE_CHANGED does not mutate state when no agents match', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {
+                a1: makeAgent({id: 'a1', workflow_id: 'wf-other'}),
+            },
+            workflows: {'wf-1': makeWorkflow({id: 'wf-1', phase: 'planning'})},
+        };
+        const state = reducer(prevState, {
+            type: WORKFLOW_PHASE_CHANGED,
+            data: {
+                workflow_id: 'wf-1',
+                phase: 'plan_review',
+                planner_agent_id: 'nonexistent',
+                implementer_agent_id: '',
+                plan_iteration_count: 1,
+                updated_at: 7000,
+            },
+        });
+
+        // agents ref should be preserved (no unnecessary copy).
+        expect(state.agents).toBe(prevState.agents);
+    });
 });

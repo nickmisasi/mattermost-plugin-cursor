@@ -737,6 +737,95 @@ func TestMessageHasBeenPosted_ForceNew_InThread(t *testing.T) {
 	cursorClient.AssertCalled(t, "LaunchAgent", mock.Anything, mock.Anything)
 }
 
+func TestMessageHasBeenPosted_MentionInThread_Planning_QueuesFeedback(t *testing.T) {
+	p, api, _, store := setupTestPlugin(t)
+
+	workflow := &kvstore.HITLWorkflow{
+		ID:             "wf-1",
+		UserID:         "user-1",
+		ChannelID:      "ch-1",
+		RootPostID:     "root-post-1",
+		Phase:          kvstore.PhasePlanning,
+		PlannerAgentID: "planner-1",
+	}
+
+	post := &model.Post{
+		Id:        "reply-mention",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-post-1",
+		Message:   "@cursor also handle edge case X",
+	}
+
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	store.On("GetWorkflowByThread", "root-post-1").Return(workflow, nil)
+
+	// isPlannerStale: planner is still RUNNING, so not stale.
+	store.On("GetAgent", "planner-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "planner-1",
+		Status:        "RUNNING",
+	}, nil)
+
+	store.On("SaveWorkflow", mock.MatchedBy(func(wf *kvstore.HITLWorkflow) bool {
+		return wf.PendingFeedback == "also handle edge case X"
+	})).Return(nil)
+
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return strings.Contains(p.Message, "apply your feedback")
+	})).Return(&model.Post{Id: "ack"}, nil)
+
+	p.MessageHasBeenPosted(nil, post)
+
+	store.AssertCalled(t, "SaveWorkflow", mock.Anything)
+	assert.Equal(t, "also handle edge case X", workflow.PendingFeedback)
+}
+
+func TestMessageHasBeenPosted_MentionInThread_Planning_AppendsFeedback(t *testing.T) {
+	p, api, _, store := setupTestPlugin(t)
+
+	workflow := &kvstore.HITLWorkflow{
+		ID:              "wf-1",
+		UserID:          "user-1",
+		ChannelID:       "ch-1",
+		RootPostID:      "root-post-1",
+		Phase:           kvstore.PhasePlanning,
+		PlannerAgentID:  "planner-1",
+		PendingFeedback: "first feedback",
+	}
+
+	post := &model.Post{
+		Id:        "reply-mention-2",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-post-1",
+		Message:   "@cursor second feedback",
+	}
+
+	// :eyes: added on mention detection.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	store.On("GetWorkflowByThread", "root-post-1").Return(workflow, nil)
+
+	store.On("GetAgent", "planner-1").Return(&kvstore.AgentRecord{
+		CursorAgentID: "planner-1",
+		Status:        "RUNNING",
+	}, nil)
+
+	store.On("SaveWorkflow", mock.Anything).Return(nil)
+
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "ack"}, nil)
+
+	p.MessageHasBeenPosted(nil, post)
+
+	assert.Equal(t, "first feedback\n\nsecond feedback", workflow.PendingFeedback)
+}
+
 func TestDefaultResolution(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 

@@ -216,6 +216,7 @@ export const websocketAgentCreated = (data: AgentCreatedEvent): AgentCreatedActi
         repository: data.repository,
         branch: data.branch,
         prompt: data.prompt,
+        description: data.description || '',
         pr_url: '',
         cursor_url: data.cursor_url,
         channel_id: data.channel_id,
