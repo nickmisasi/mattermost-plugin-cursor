@@ -51,6 +51,9 @@ type Plugin struct {
 	// router is the HTTP router for handling API requests.
 	router *mux.Router
 
+	// activatedAt records when OnActivate completed, used for uptime reporting.
+	activatedAt time.Time
+
 	// configurationLock synchronizes access to the configuration, cursorClient, and botUserID.
 	configurationLock sync.RWMutex
 
@@ -124,6 +127,7 @@ const (
 
 // OnActivate is invoked when the plugin is activated.
 func (p *Plugin) OnActivate() error {
+	p.activatedAt = time.Now()
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
 	// Ensure the bot account exists.
