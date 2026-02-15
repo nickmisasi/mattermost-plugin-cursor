@@ -12,6 +12,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
+const staleAgentMaxAge = 24 * time.Hour
+
 // pollAgentStatuses is the background job callback that checks active agents for status changes.
 func (p *Plugin) pollAgentStatuses() {
 	// Step 1: Get all active agents from KV store.
@@ -21,6 +23,11 @@ func (p *Plugin) pollAgentStatuses() {
 		return
 	}
 
+	cleaned := p.cleanupStaleAgents(activeAgents, staleAgentMaxAge)
+	if cleaned > 0 {
+		p.API.LogInfo("Cleaned up stale agents", "count", cleaned, "max_age", staleAgentMaxAge.String())
+	}
+
 	if len(activeAgents) == 0 {
 		return
 	}
@@ -28,6 +35,9 @@ func (p *Plugin) pollAgentStatuses() {
 	p.API.LogDebug("Polling agent statuses", "count", len(activeAgents))
 
 	for _, record := range activeAgents {
+		if cursor.AgentStatus(record.Status).IsTerminal() {
+			continue
+		}
 		p.pollSingleAgent(record)
 	}
 }
@@ -346,40 +356,33 @@ func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 
 // cleanupStaleAgents marks agents stuck in CREATING or RUNNING state for longer
 // than maxAge as STOPPED and notifies users via thread messages.
-func (p *Plugin) cleanupStaleAgents(maxAge time.Duration) (int, error) {
-	agents, err := p.kvstore.ListActiveAgents()
-	if err != nil {
-		return 0, fmt.Errorf("failed to list active agents: %w", err)
-	}
-
+func (p *Plugin) cleanupStaleAgents(agents []*kvstore.AgentRecord, maxAge time.Duration) int {
 	cleaned := 0
+	now := time.Now()
+
 	for _, agent := range agents {
-		createdAt := time.Unix(0, agent.CreatedAt*int64(time.Millisecond))
-		if time.Since(createdAt) > maxAge {
-			agent.Status = "STOPPED"
-			agent.UpdatedAt = time.Now().UnixMilli()
-			if err := p.kvstore.SaveAgent(agent); err != nil {
-				p.API.LogError("Failed to mark stale agent as stopped",
-					"agent_id", agent.CursorAgentID, "error", err.Error())
-				continue
-			}
-
-			// Notify the user in the thread.
-			if _, appErr := p.API.CreatePost(&model.Post{
-				UserId:    p.getBotUserID(),
-				ChannelId: agent.ChannelID,
-				RootId:    agent.PostID,
-				Message:   fmt.Sprintf("Agent timed out after %s without completing. Marked as stopped.", maxAge),
-			}); appErr != nil {
-				p.API.LogError("Failed to post stale agent notification", "error", appErr.Error())
-			}
-
-			p.removeReaction(agent.TriggerPostID, "hourglass_flowing_sand")
-			p.addReaction(agent.TriggerPostID, "no_entry_sign")
-			p.publishAgentStatusChange(agent)
-			cleaned++
+		if agent == nil || agent.CreatedAt <= 0 {
+			continue
 		}
+
+		createdAt := time.UnixMilli(agent.CreatedAt)
+		if now.Sub(createdAt) <= maxAge {
+			continue
+		}
+
+		agent.Status = string(cursor.AgentStatusStopped)
+		agent.UpdatedAt = now.UnixMilli()
+		p.handleAgentStopped(agent)
+		if err := p.kvstore.SaveAgent(agent); err != nil {
+			p.API.LogError("Failed to mark stale agent as stopped",
+				"agent_id", agent.CursorAgentID, "error", err.Error())
+			continue
+		}
+
+		p.updateBotPostProps(agent)
+		p.publishAgentStatusChange(agent)
+		cleaned++
 	}
 
-	return cleaned, nil
+	return cleaned
 }

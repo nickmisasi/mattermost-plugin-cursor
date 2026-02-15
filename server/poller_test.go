@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
@@ -21,6 +22,7 @@ func setupPollerPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClien
 	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
@@ -77,6 +79,46 @@ func TestPoller_NoActiveAgents(t *testing.T) {
 	p.pollAgentStatuses()
 
 	cursorClient.AssertNotCalled(t, "GetAgent")
+}
+
+func TestPoller_CleansStaleAgentsBeforePolling(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "RUNNING",
+		TriggerPostID: "trigger-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+		CreatedAt:     time.Now().Add(-25 * time.Hour).UnixMilli(),
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.CursorAgentID == "agent-1" && r.Status == "STOPPED"
+	})).Return(nil)
+
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "hourglass_flowing_sand"
+	})).Return(nil)
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "no_entry_sign"
+	})).Return(nil, nil)
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-1" &&
+			post.ChannelId == "ch-1" &&
+			post.UserId == "bot-user-id" &&
+			containsSubstring(post.Message, "stopped")
+	})).Return(&model.Post{Id: "msg-1"}, nil)
+
+	p.pollAgentStatuses()
+
+	// Stale cleanup should stop the record and skip API polling in this cycle.
+	cursorClient.AssertNotCalled(t, "GetAgent")
+	store.AssertCalled(t, "SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.CursorAgentID == "agent-1" && r.Status == "STOPPED"
+	}))
+	api.AssertExpectations(t)
 }
 
 func TestPoller_StatusUnchanged(t *testing.T) {
