@@ -364,6 +364,7 @@ func TestWebhook_ReviewApproved(t *testing.T) {
 
 	store.On("HasDeliveryBeenProcessed", "delivery-rv-approved").Return(false, nil)
 	store.On("MarkDeliveryProcessed", "delivery-rv-approved").Return(nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/77").Return(nil, nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/77").Return(agent, nil)
 
 	// Review approved attachment: green color for approved.
@@ -412,6 +413,7 @@ func TestWebhook_ReviewChangesRequested(t *testing.T) {
 
 	store.On("HasDeliveryBeenProcessed", "delivery-rv-changes").Return(false, nil)
 	store.On("MarkDeliveryProcessed", "delivery-rv-changes").Return(nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/88").Return(nil, nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/88").Return(agent, nil)
 
 	// Changes requested attachment: red color for changes_requested.
@@ -460,6 +462,7 @@ func TestWebhook_ReviewCommented(t *testing.T) {
 
 	store.On("HasDeliveryBeenProcessed", "delivery-rv-commented").Return(false, nil)
 	store.On("MarkDeliveryProcessed", "delivery-rv-commented").Return(nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/66").Return(nil, nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/66").Return(agent, nil)
 
 	// Comment notification attachment: blue color for comment.
@@ -507,6 +510,7 @@ func TestWebhook_ReviewCommentedEmpty(t *testing.T) {
 
 	store.On("HasDeliveryBeenProcessed", "delivery-rv-empty").Return(false, nil)
 	store.On("MarkDeliveryProcessed", "delivery-rv-empty").Return(nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/44").Return(nil, nil)
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/44").Return(agent, nil)
 
 	req := makeWebhookRequest(t, "pull_request_review", "delivery-rv-empty", body, sig)
@@ -664,3 +668,363 @@ func TestTruncateText_LongReviewBody(t *testing.T) {
 // mockPluginAPI type alias for the plugintest.API used in setupTestPlugin.
 // This is needed because setupTestPlugin stores the mock as plugin.API interface.
 type mockPluginAPI = plugintest.API
+
+// --- Review Loop webhook tests ---
+
+func TestWebhook_SynchronizeTriggersReviewLoop(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	// Active review loop for this PR.
+	loop := &kvstore.ReviewLoop{
+		ID:            "loop-1",
+		AgentRecordID: "agent-1",
+		Phase:         kvstore.ReviewPhaseCursorFixing,
+		Iteration:     2,
+		RootPostID:    "root-1",
+		ChannelID:     "ch-1",
+		PRURL:         "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	// handlePRSynchronize saves.
+	store.On("SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseAwaitingReview
+	})).Return(nil)
+
+	// Inline status update: GetAgent -> GetPost -> UpdatePost.
+	store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		BotReplyPostID: "reply-1",
+		ChannelID:      "ch-1",
+	}, nil).Maybe()
+	api.On("GetPost", "reply-1").Return(&model.Post{Id: "reply-1", ChannelId: "ch-1"}, nil).Maybe()
+	api.On("UpdatePost", mock.Anything).Return(&model.Post{}, nil).Maybe()
+
+	// WebSocket event for review loop phase change.
+	api.On("PublishWebSocketEvent", "review_loop_changed", mock.Anything, mock.Anything).Return().Maybe()
+
+	event := PullRequestEvent{
+		Action: "synchronize",
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.PullRequest.Head.SHA = "newsha"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-sync").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-sync").Return(nil)
+
+	req := makeWebhookRequest(t, "pull_request", "delivery-sync", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	store.AssertExpectations(t)
+}
+
+func TestWebhook_SynchronizeNoReviewLoop(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+
+	event := PullRequestEvent{
+		Action: "synchronize",
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-sync-noop").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-sync-noop").Return(nil)
+
+	req := makeWebhookRequest(t, "pull_request", "delivery-sync-noop", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// Should not save anything.
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestWebhook_BotReviewTriggersReviewLoop(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	// Enable AI review loop config.
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	loop := &kvstore.ReviewLoop{
+		ID:            "loop-1",
+		AgentRecordID: "agent-1",
+		Phase:         kvstore.ReviewPhaseAwaitingReview,
+		Iteration:     1,
+		TriggerPostID: "trigger-1",
+		RootPostID:    "root-1",
+		ChannelID:     "ch-1",
+		UserID:        "user-1",
+		Owner:         "org",
+		Repo:          "repo",
+		PRNumber:      42,
+		PRURL:         "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	// CodeRabbit approved (via body text).
+	event := PullRequestReviewEvent{
+		Action: "submitted",
+		Review: ghReview{
+			State: "commented",
+			Body:  "Actionable comments posted: 0\nAll clean!",
+		},
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.Review.User.Login = "coderabbitai[bot]"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-bot-review").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-bot-review").Return(nil)
+
+	// handleAIReview will save with approved then human_review.
+	store.On("SaveReviewLoop", mock.Anything).Return(nil)
+
+	// Inline status update: GetAgent -> GetPost -> UpdatePost.
+	store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		BotReplyPostID: "reply-1",
+		ChannelID:      "ch-1",
+	}, nil).Maybe()
+	api.On("GetPost", "reply-1").Return(&model.Post{Id: "reply-1", ChannelId: "ch-1"}, nil).Maybe()
+	api.On("UpdatePost", mock.Anything).Return(&model.Post{}, nil).Maybe()
+
+	// Completion post and reactions.
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "notif-1"}, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+
+	// WebSocket event for review loop phase changes.
+	api.On("PublishWebSocketEvent", "review_loop_changed", mock.Anything, mock.Anything).Return().Maybe()
+
+	req := makeWebhookRequest(t, "pull_request_review", "delivery-bot-review", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	store.AssertExpectations(t)
+}
+
+func TestWebhook_HumanReviewApproval(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+	p.configuration.EnableAIReviewLoop = true
+
+	// Active review loop in human_review phase for this PR.
+	loop := &kvstore.ReviewLoop{
+		ID:            "loop-1",
+		AgentRecordID: "agent-1",
+		Phase:         kvstore.ReviewPhaseHumanReview,
+		Iteration:     2,
+		TriggerPostID: "trigger-1",
+		RootPostID:    "root-1",
+		ChannelID:     "ch-1",
+		UserID:        "user-1",
+		PRURL:         "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	// handleHumanReviewApproval: save loop.
+	store.On("SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseComplete
+	})).Return(nil)
+
+	// Inline status update.
+	store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		BotReplyPostID: "reply-1",
+		ChannelID:      "ch-1",
+	}, nil).Maybe()
+	api.On("GetPost", "reply-1").Return(&model.Post{Id: "reply-1", ChannelId: "ch-1"}, nil).Maybe()
+	api.On("UpdatePost", mock.Anything).Return(&model.Post{}, nil).Maybe()
+
+	// Completion post.
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-1" && hasAttachmentWithTitle(post, "approved")
+	})).Return(&model.Post{Id: "notif-1"}, nil)
+
+	// Rocket reaction.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "rocket"
+	})).Return(nil, nil)
+
+	// WebSocket event.
+	api.On("PublishWebSocketEvent", "review_loop_changed", mock.Anything, mock.Anything).Return()
+
+	// Also need agent lookup for normal notification (falls through).
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+		PrURL:         "https://github.com/org/repo/pull/42",
+	}, nil)
+
+	// Normal review notification post (green for approved).
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-1" && hasAttachmentWithColor(post, "#3DB887")
+	})).Return(&model.Post{Id: "rv-1"}, nil).Maybe()
+
+	event := PullRequestReviewEvent{
+		Action: "submitted",
+		Review: ghReview{
+			State:   "approved",
+			HTMLURL: "https://github.com/org/repo/pull/42#pullrequestreview-1",
+		},
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.Review.User.Login = "humandev"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-human-approval").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-human-approval").Return(nil)
+
+	req := makeWebhookRequest(t, "pull_request_review", "delivery-human-approval", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// Verify the review loop was saved with complete phase.
+	store.AssertCalled(t, "SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseComplete
+	}))
+}
+
+func TestWebhook_HumanReview_NotApproved_NoTransition(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	// Active review loop in human_review phase.
+	loop := &kvstore.ReviewLoop{
+		ID:            "loop-1",
+		AgentRecordID: "agent-1",
+		Phase:         kvstore.ReviewPhaseHumanReview,
+		Iteration:     2,
+		RootPostID:    "root-1",
+		ChannelID:     "ch-1",
+		UserID:        "user-1",
+		PRURL:         "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	// Agent lookup for normal review notification.
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+		PrURL:         "https://github.com/org/repo/pull/42",
+	}, nil)
+
+	// Comment review notification (blue for commented).
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-1" && hasAttachmentWithColor(post, "#2389D7")
+	})).Return(&model.Post{Id: "rv-1"}, nil)
+
+	event := PullRequestReviewEvent{
+		Action: "submitted",
+		Review: ghReview{
+			State:   "commented",
+			Body:    "Needs a bit more work here.",
+			HTMLURL: "https://github.com/org/repo/pull/42#pullrequestreview-2",
+		},
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.Review.User.Login = "humandev"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-human-comment").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-human-comment").Return(nil)
+
+	req := makeWebhookRequest(t, "pull_request_review", "delivery-human-comment", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// Should NOT have saved the review loop -- only approved triggers transition.
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestWebhook_HumanReview_NotIntercepted(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+		PrURL:         "https://github.com/org/repo/pull/42",
+	}
+
+	event := PullRequestReviewEvent{
+		Action: "submitted",
+		Review: ghReview{
+			State:   "approved",
+			HTMLURL: "https://github.com/org/repo/pull/42#pullrequestreview-1",
+		},
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.Review.User.Login = "human-dev" // Not an AI bot.
+
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-human-rv").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-human-rv").Return(nil)
+	// Human reviewers now check for active review loops, but none found here.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(agent, nil)
+
+	// Normal review notification (green for approved).
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return p.RootId == "root-1" && hasAttachmentWithColor(p, "#3DB887")
+	})).Return(&model.Post{Id: "rv-1"}, nil)
+
+	req := makeWebhookRequest(t, "pull_request_review", "delivery-human-rv", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// No review loop found, so it falls through to normal notification.
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}

@@ -95,6 +95,45 @@ type ImageRef struct {
 	Height int    `json:"height"`
 }
 
+// ReviewLoop tracks the automated AI review cycle for a Cursor-created PR.
+// Separate from AgentRecord and HITLWorkflow. Linked back via AgentRecordID.
+type ReviewLoop struct {
+	ID            string `json:"id"`                   // UUID primary key
+	AgentRecordID string `json:"agentRecordId"`        // Agent that created the PR
+	WorkflowID    string `json:"workflowId,omitempty"` // HITL workflow ID, if applicable
+	UserID        string `json:"userId"`
+	ChannelID     string `json:"channelId"`
+	RootPostID    string `json:"rootPostId"` // Mattermost thread root
+	TriggerPostID string `json:"triggerPostId"`
+
+	// PR info (populated from AgentRecord + parsed PR URL)
+	PRURL      string `json:"prUrl"`
+	PRNumber   int    `json:"prNumber"`
+	Repository string `json:"repository"` // "owner/repo"
+	Owner      string `json:"owner"`      // Parsed from PR URL
+	Repo       string `json:"repo"`       // Parsed from PR URL
+
+	// State machine
+	Phase     string `json:"phase"`     // See ReviewPhase* constants
+	Iteration int    `json:"iteration"` // Current fix-review iteration (starts at 1)
+
+	// Tracking
+	LastCommitSHA string `json:"lastCommitSha,omitempty"` // HEAD SHA we last saw
+
+	// Timeline (append-only log of phase transitions for dashboard display)
+	History []ReviewLoopEvent `json:"history,omitempty"`
+
+	CreatedAt int64 `json:"createdAt"` // Unix millis
+	UpdatedAt int64 `json:"updatedAt"` // Unix millis
+}
+
+// ReviewLoopEvent records a single phase transition for the dashboard timeline.
+type ReviewLoopEvent struct {
+	Phase     string `json:"phase"`
+	Timestamp int64  `json:"timestamp"`        // Unix millis
+	Detail    string `json:"detail,omitempty"` // e.g., "3 comments", "approved after 2 iterations"
+}
+
 // HITL workflow phase constants.
 const (
 	PhaseContextReview = "context_review" // Waiting for user to approve enriched context
@@ -103,6 +142,18 @@ const (
 	PhaseImplementing  = "implementing"   // Implementation Cursor agent is running
 	PhaseRejected      = "rejected"       // User rejected at any stage (terminal)
 	PhaseComplete      = "complete"       // Implementation finished (terminal)
+)
+
+// ReviewLoop phase constants.
+const (
+	ReviewPhaseRequestingReview = "requesting_review" // Just requested AI reviewers
+	ReviewPhaseAwaitingReview   = "awaiting_review"   // Waiting for CodeRabbit/Copilot
+	ReviewPhaseCursorFixing     = "cursor_fixing"     // Posted @cursor comment, waiting for fix
+	ReviewPhaseApproved         = "approved"          // CodeRabbit approved
+	ReviewPhaseHumanReview      = "human_review"      // Human reviewers assigned
+	ReviewPhaseComplete         = "complete"          // Human approved (terminal)
+	ReviewPhaseMaxIterations    = "max_iterations"    // Safety limit hit (terminal)
+	ReviewPhaseFailed           = "failed"            // Error during review loop (terminal)
 )
 
 // KVStore defines the storage interface for the plugin.
@@ -146,4 +197,13 @@ type KVStore interface {
 	SetThreadWorkflow(rootPostID string, workflowID string) error
 	SetAgentWorkflow(cursorAgentID string, workflowID string) error
 	DeleteAgentWorkflow(cursorAgentID string) error
+
+	// ReviewLoop records
+	GetReviewLoop(reviewLoopID string) (*ReviewLoop, error)
+	SaveReviewLoop(loop *ReviewLoop) error
+	DeleteReviewLoop(reviewLoopID string) error
+
+	// ReviewLoop lookups
+	GetReviewLoopByPRURL(prURL string) (*ReviewLoop, error)
+	GetReviewLoopByAgent(agentRecordID string) (*ReviewLoop, error)
 }

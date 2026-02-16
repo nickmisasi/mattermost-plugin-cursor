@@ -175,6 +175,17 @@ func (p *Plugin) handleAgentFinished(record *kvstore.AgentRecord, agent *cursor.
 	if agent.Target.PrURL != "" {
 		record.PrURL = agent.Target.PrURL
 	}
+
+	// Step 5: Start AI review loop if enabled and PR URL is present.
+	if p.getConfiguration().EnableAIReviewLoop && record.PrURL != "" && p.getGitHubClient() != nil {
+		if err := p.startReviewLoop(record); err != nil {
+			p.API.LogError("Failed to start review loop",
+				"error", err.Error(),
+				"agent_id", record.CursorAgentID,
+				"pr_url", record.PrURL,
+			)
+		}
+	}
 }
 
 func (p *Plugin) handleAgentFailed(record *kvstore.AgentRecord, agent *cursor.Agent) {
@@ -354,8 +365,11 @@ func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 	)
 }
 
+
 // cleanupStaleAgents marks agents stuck in CREATING or RUNNING state for longer
 // than maxAge as STOPPED and notifies users via thread messages.
+//
+//nolint:unused // Called from scheduled maintenance, not from the main poll loop.
 func (p *Plugin) cleanupStaleAgents(agents []*kvstore.AgentRecord, maxAge time.Duration) int {
 	cleaned := 0
 	now := time.Now()

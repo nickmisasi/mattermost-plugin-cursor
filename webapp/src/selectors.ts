@@ -1,10 +1,10 @@
 import type {GlobalState} from '@mattermost/types/store';
 
 import manifest from './manifest';
-import type {Agent, PluginState, Workflow} from './types';
+import type {Agent, PluginState, ReviewLoop, Workflow} from './types';
 
 const getPluginState = (state: GlobalState): PluginState => {
-    return (state as any)['plugins-' + manifest.id] || {agents: {}, workflows: {}, selectedAgentId: null, isLoading: false};
+    return (state as any)['plugins-' + manifest.id] || {agents: {}, workflows: {}, reviewLoops: {}, selectedAgentId: null, isLoading: false};
 };
 
 export const getAgents = (state: GlobalState): Record<string, Agent> => {
@@ -55,4 +55,17 @@ export const getWorkflowForAgent = (state: GlobalState, agentId: string): Workfl
 
 export const getWorkflow = (state: GlobalState, workflowId: string): Workflow | undefined => {
     return getWorkflows(state)[workflowId];
+};
+
+export const getReviewLoops = (state: GlobalState): Record<string, ReviewLoop> => {
+    return getPluginState(state).reviewLoops;
+};
+
+export const getReviewLoopForAgent = (state: GlobalState, agentId: string): ReviewLoop | undefined => {
+    const reviewLoops = getReviewLoops(state);
+    return Object.values(reviewLoops).find((rl) => rl.agent_record_id === agentId);
+};
+
+export const getReviewLoop = (state: GlobalState, reviewLoopId: string): ReviewLoop | undefined => {
+    return getReviewLoops(state)[reviewLoopId];
 };

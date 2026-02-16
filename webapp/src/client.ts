@@ -1,7 +1,7 @@
 import {Client4} from 'mattermost-redux/client';
 
 import manifest from './manifest';
-import type {Agent, AgentsResponse, FollowupRequest, StatusResponse, Workflow} from './types';
+import type {Agent, AgentsResponse, FollowupRequest, ReviewLoop, StatusResponse, Workflow} from './types';
 
 const pluginApiBase = `/plugins/${manifest.id}/api/v1`;
 
@@ -70,6 +70,17 @@ class ClientClass {
         }));
         if (!response.ok) {
             throw new Error(`DELETE /agents/${agentId} failed: ${response.status}`);
+        }
+        return response.json();
+    };
+
+    getReviewLoop = async (reviewLoopId: string): Promise<ReviewLoop> => {
+        const url = `${pluginApiBase}/review-loops/${encodeURIComponent(reviewLoopId)}`;
+        const response = await fetch(url, Client4.getOptions({
+            method: 'GET',
+        }));
+        if (!response.ok) {
+            throw new Error(`GET /review-loops/${reviewLoopId} failed: ${response.status}`);
         }
         return response.json();
     };

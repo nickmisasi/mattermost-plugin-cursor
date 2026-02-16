@@ -24,7 +24,8 @@ const (
 	eventPullRequestReview = "pull_request_review"
 	eventPing              = "ping"
 
-	prActionClosed = "closed"
+	prActionClosed      = "closed"
+	prActionSynchronize = "synchronize"
 
 	reviewActionSubmitted = "submitted"
 
@@ -47,6 +48,7 @@ type ghPullRequest struct {
 	Merged  bool   `json:"merged"`
 	Head    struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -222,7 +224,13 @@ func (p *Plugin) handlePullRequestEvent(w http.ResponseWriter, body []byte) {
 		return
 	}
 
-	// Only handle PR closed (merged or closed-without-merge).
+	// Handle synchronize action for review loop.
+	if event.Action == prActionSynchronize {
+		p.handlePRSynchronizeWebhook(event, w)
+		return
+	}
+
+	// Only handle PR closed (merged or closed-without-merge) for the rest.
 	if event.Action != prActionClosed {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -272,6 +280,35 @@ func (p *Plugin) handlePullRequestEvent(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handlePRSynchronizeWebhook handles the synchronize action (new commits pushed) for a PR.
+// If the PR has an active review loop in the cursor_fixing phase, it triggers re-review.
+func (p *Plugin) handlePRSynchronizeWebhook(event PullRequestEvent, w http.ResponseWriter) {
+	loop, err := p.kvstore.GetReviewLoopByPRURL(event.PullRequest.HTMLURL)
+	if err != nil {
+		p.API.LogError("Failed to look up review loop for synchronize event",
+			"error", err.Error(),
+			"pr_url", event.PullRequest.HTMLURL,
+		)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if loop == nil || loop.Phase != kvstore.ReviewPhaseCursorFixing {
+		// No active review loop or not in cursor_fixing phase -- ignore.
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if err := p.handlePRSynchronize(loop, event.PullRequest); err != nil {
+		p.API.LogError("Failed to handle PR synchronize for review loop",
+			"error", err.Error(),
+			"review_loop_id", loop.ID,
+		)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte) {
 	var event PullRequestReviewEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -286,7 +323,51 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 		return
 	}
 
-	// Look up the agent associated with this PR.
+	// --- Review Loop: Check for human review completion ---
+	// If this is NOT an AI bot, check if the PR has an active review loop in human_review phase.
+	if !p.isAIReviewerBot(event.Review.User.Login) {
+		loop, loopErr := p.kvstore.GetReviewLoopByPRURL(event.PullRequest.HTMLURL)
+		if loopErr != nil {
+			p.API.LogError("Failed to look up review loop for human review",
+				"error", loopErr.Error(),
+				"pr_url", event.PullRequest.HTMLURL,
+			)
+		}
+		if loop != nil && loop.Phase == kvstore.ReviewPhaseHumanReview &&
+			strings.EqualFold(event.Review.State, reviewStateApproved) {
+			if err := p.handleHumanReviewApproval(loop, event.Review.User.Login); err != nil {
+				p.API.LogError("Failed to handle human review approval",
+					"error", err.Error(),
+					"review_loop_id", loop.ID,
+				)
+			}
+			// Still fall through to normal notification handling below.
+		}
+	}
+
+	// --- Review Loop: Check if this is an AI reviewer bot ---
+	if p.isAIReviewerBot(event.Review.User.Login) {
+		loop, loopErr := p.kvstore.GetReviewLoopByPRURL(event.PullRequest.HTMLURL)
+		if loopErr != nil {
+			p.API.LogError("Failed to look up review loop for AI review",
+				"error", loopErr.Error(),
+				"pr_url", event.PullRequest.HTMLURL,
+			)
+		}
+		if loop != nil && loop.Phase == kvstore.ReviewPhaseAwaitingReview {
+			if err := p.handleAIReview(loop, event.Review, event.PullRequest); err != nil {
+				p.API.LogError("Failed to handle AI review",
+					"error", err.Error(),
+					"review_loop_id", loop.ID,
+				)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// If no active review loop, fall through to normal handling.
+	}
+
+	// --- Existing: Look up the agent and post notification ---
 	agent := p.findAgentForPR(event.PullRequest)
 	if agent == nil {
 		p.API.LogDebug("No agent found for reviewed PR", "pr_url", event.PullRequest.HTMLURL)

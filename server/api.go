@@ -43,6 +43,9 @@ func (p *Plugin) initRouter() *mux.Router {
 	// Phase 5: Workflow detail endpoint for the webapp.
 	authedRouter.HandleFunc("/workflows/{id}", p.handleGetWorkflow).Methods(http.MethodGet)
 
+	// Phase 5: Review loop detail endpoint for the webapp.
+	authedRouter.HandleFunc("/review-loops/{id}", p.handleGetReviewLoop).Methods(http.MethodGet)
+
 	// Admin-only routes.
 	adminRouter := authedRouter.PathPrefix("/admin").Subrouter()
 	adminRouter.Use(p.RequireSystemAdmin)
@@ -189,6 +192,11 @@ type AgentResponse struct {
 	WorkflowID         string `json:"workflow_id,omitempty"`
 	WorkflowPhase      string `json:"workflow_phase,omitempty"`
 	PlanIterationCount int    `json:"plan_iteration_count,omitempty"`
+
+	// Review loop fields (populated when agent has an active review loop)
+	ReviewLoopID        string `json:"review_loop_id,omitempty"`
+	ReviewLoopPhase     string `json:"review_loop_phase,omitempty"`
+	ReviewLoopIteration int    `json:"review_loop_iteration,omitempty"`
 }
 
 // AgentsListResponse is the response from GET /api/v1/agents.
@@ -252,6 +260,13 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 				agentResp.WorkflowPhase = wf.Phase
 				agentResp.PlanIterationCount = wf.PlanIterationCount
 			}
+		}
+
+		// Look up review loop association.
+		if rl, rlErr := p.kvstore.GetReviewLoopByAgent(a.CursorAgentID); rlErr == nil && rl != nil {
+			agentResp.ReviewLoopID = rl.ID
+			agentResp.ReviewLoopPhase = rl.Phase
+			agentResp.ReviewLoopIteration = rl.Iteration
 		}
 
 		resp.Agents = append(resp.Agents, agentResp)
@@ -322,6 +337,13 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			resp.WorkflowPhase = wf.Phase
 			resp.PlanIterationCount = wf.PlanIterationCount
 		}
+	}
+
+	// Look up review loop association.
+	if rl, rlErr := p.kvstore.GetReviewLoopByAgent(record.CursorAgentID); rlErr == nil && rl != nil {
+		resp.ReviewLoopID = rl.ID
+		resp.ReviewLoopPhase = rl.Phase
+		resp.ReviewLoopIteration = rl.Iteration
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -563,6 +585,80 @@ type WorkflowResponse struct {
 	SkipPlanLoop       bool   `json:"skip_plan_loop"`
 	CreatedAt          int64  `json:"created_at"`
 	UpdatedAt          int64  `json:"updated_at"`
+}
+
+// ReviewLoopResponse is the JSON representation of a review loop for the webapp.
+type ReviewLoopResponse struct {
+	ID            string                    `json:"id"`
+	AgentRecordID string                    `json:"agent_record_id"`
+	WorkflowID    string                    `json:"workflow_id,omitempty"`
+	UserID        string                    `json:"user_id"`
+	ChannelID     string                    `json:"channel_id"`
+	RootPostID    string                    `json:"root_post_id"`
+	TriggerPostID string                    `json:"trigger_post_id"`
+	PRURL         string                    `json:"pr_url"`
+	PRNumber      int                       `json:"pr_number"`
+	Repository    string                    `json:"repository"`
+	Phase         string                    `json:"phase"`
+	Iteration     int                       `json:"iteration"`
+	LastCommitSHA string                    `json:"last_commit_sha,omitempty"`
+	History       []ReviewLoopEventResponse `json:"history"`
+	CreatedAt     int64                     `json:"created_at"`
+	UpdatedAt     int64                     `json:"updated_at"`
+}
+
+// ReviewLoopEventResponse is the JSON representation of a review loop timeline event.
+type ReviewLoopEventResponse struct {
+	Phase     string `json:"phase"`
+	Timestamp int64  `json:"timestamp"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+func (p *Plugin) handleGetReviewLoop(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("Mattermost-User-ID")
+	reviewLoopID := mux.Vars(r)["id"]
+
+	loop, err := p.kvstore.GetReviewLoop(reviewLoopID)
+	if err != nil {
+		p.API.LogError("Failed to get review loop", "reviewLoopID", reviewLoopID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if loop == nil || loop.UserID != userID {
+		http.Error(w, "Review loop not found", http.StatusNotFound)
+		return
+	}
+
+	history := make([]ReviewLoopEventResponse, 0, len(loop.History))
+	for _, evt := range loop.History {
+		history = append(history, ReviewLoopEventResponse{
+			Phase:     evt.Phase,
+			Timestamp: evt.Timestamp,
+			Detail:    evt.Detail,
+		})
+	}
+
+	resp := ReviewLoopResponse{
+		ID:            loop.ID,
+		AgentRecordID: loop.AgentRecordID,
+		WorkflowID:    loop.WorkflowID,
+		UserID:        loop.UserID,
+		ChannelID:     loop.ChannelID,
+		RootPostID:    loop.RootPostID,
+		TriggerPostID: loop.TriggerPostID,
+		PRURL:         loop.PRURL,
+		PRNumber:      loop.PRNumber,
+		Repository:    loop.Repository,
+		Phase:         loop.Phase,
+		Iteration:     loop.Iteration,
+		LastCommitSHA: loop.LastCommitSHA,
+		History:       history,
+		CreatedAt:     loop.CreatedAt,
+		UpdatedAt:     loop.UpdatedAt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (p *Plugin) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {

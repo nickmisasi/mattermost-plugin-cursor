@@ -234,6 +234,38 @@ func (m *mockKVStore) DeleteAgentWorkflow(cursorAgentID string) error {
 	return m.Called(cursorAgentID).Error(0)
 }
 
+func (m *mockKVStore) GetReviewLoop(reviewLoopID string) (*kvstore.ReviewLoop, error) {
+	args := m.Called(reviewLoopID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
+}
+
+func (m *mockKVStore) SaveReviewLoop(loop *kvstore.ReviewLoop) error {
+	return m.Called(loop).Error(0)
+}
+
+func (m *mockKVStore) DeleteReviewLoop(reviewLoopID string) error {
+	return m.Called(reviewLoopID).Error(0)
+}
+
+func (m *mockKVStore) GetReviewLoopByPRURL(prURL string) (*kvstore.ReviewLoop, error) {
+	args := m.Called(prURL)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
+}
+
+func (m *mockKVStore) GetReviewLoopByAgent(agentRecordID string) (*kvstore.ReviewLoop, error) {
+	args := m.Called(agentRecordID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
+}
+
 type testEnv struct {
 	handler      Command
 	api          *plugintest.API

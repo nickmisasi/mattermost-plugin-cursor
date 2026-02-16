@@ -612,3 +612,133 @@ func TestPoller_NonWorkflowAgent_NormalHandling(t *testing.T) {
 	api.AssertCalled(t, "RemoveReaction", mock.Anything)
 	api.AssertCalled(t, "AddReaction", mock.Anything)
 }
+
+// --- Review Loop poller tests ---
+
+func TestPoller_FinishedWithPR_StartsReviewLoop(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	// Enable review loop.
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.GitHubPAT = "ghp_test"
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Fixed the bug",
+		Target:  cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/42"},
+	}, nil)
+
+	// Normal finish handling mocks.
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	// Review loop mocks.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+	store.On("SaveReviewLoop", mock.Anything).Return(nil)
+	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(nil)
+
+	p.pollAgentStatuses()
+
+	// Verify review loop was started.
+	store.AssertCalled(t, "SaveReviewLoop", mock.Anything)
+	ghMock.AssertCalled(t, "RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything)
+}
+
+func TestPoller_FinishedWithPR_ReviewLoopDisabled(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	// Review loop NOT enabled.
+	p.configuration.EnableAIReviewLoop = false
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Done",
+		Target:  cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/42"},
+	}, nil)
+
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	p.pollAgentStatuses()
+
+	// Should NOT have attempted review loop.
+	store.AssertNotCalled(t, "GetReviewLoopByPRURL")
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestPoller_FinishedNoPR_NoReviewLoop(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.GitHubPAT = "ghp_test"
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Done, no PR created",
+		Target:  cursor.AgentTarget{PrURL: ""}, // No PR.
+	}, nil)
+
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	p.pollAgentStatuses()
+
+	// No PR URL => no review loop.
+	store.AssertNotCalled(t, "GetReviewLoopByPRURL")
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}

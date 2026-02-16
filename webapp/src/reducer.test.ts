@@ -8,9 +8,11 @@ import {
     SET_LOADING,
     WORKFLOW_RECEIVED,
     WORKFLOW_PHASE_CHANGED,
+    REVIEW_LOOP_RECEIVED,
+    REVIEW_LOOP_CHANGED,
 } from './actions';
 import reducer from './reducer';
-import type {Agent, PluginState, Workflow} from './types';
+import type {Agent, PluginState, ReviewLoop, Workflow} from './types';
 
 const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
     id: 'agent-1',
@@ -25,6 +27,24 @@ const makeAgent = (overrides: Partial<Agent> = {}): Agent => ({
     root_post_id: '',
     summary: '',
     model: 'auto',
+    created_at: 1000,
+    updated_at: 1000,
+    ...overrides,
+});
+
+const makeReviewLoop = (overrides: Partial<ReviewLoop> = {}): ReviewLoop => ({
+    id: 'rl-1',
+    agent_record_id: 'agent-1',
+    user_id: 'user-1',
+    channel_id: 'ch-1',
+    root_post_id: 'post-1',
+    trigger_post_id: 'trigger-1',
+    pr_url: 'https://github.com/org/repo/pull/1',
+    pr_number: 1,
+    repository: 'org/repo',
+    phase: 'awaiting_review',
+    iteration: 1,
+    history: [],
     created_at: 1000,
     updated_at: 1000,
     ...overrides,
@@ -57,6 +77,7 @@ const makeWorkflow = (overrides: Partial<Workflow> = {}): Workflow => ({
 const initialState: PluginState = {
     agents: {},
     workflows: {},
+    reviewLoops: {},
     selectedAgentId: null,
     isLoading: false,
 };
@@ -374,6 +395,136 @@ describe('reducer', () => {
                 implementer_agent_id: '',
                 plan_iteration_count: 1,
                 updated_at: 7000,
+            },
+        });
+
+        // agents ref should be preserved (no unnecessary copy).
+        expect(state.agents).toBe(prevState.agents);
+    });
+
+    // --- Review Loop tests ---
+
+    it('handles REVIEW_LOOP_RECEIVED', () => {
+        const rl = makeReviewLoop({id: 'rl-1'});
+        const state = reducer(initialState, {
+            type: REVIEW_LOOP_RECEIVED,
+            data: rl,
+        });
+        expect(state.reviewLoops['rl-1']).toEqual(rl);
+    });
+
+    it('REVIEW_LOOP_RECEIVED adds to existing review loops', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            reviewLoops: {'rl-1': makeReviewLoop({id: 'rl-1'})},
+        };
+        const state = reducer(prevState, {
+            type: REVIEW_LOOP_RECEIVED,
+            data: makeReviewLoop({id: 'rl-2', agent_record_id: 'agent-2'}),
+        });
+        expect(Object.keys(state.reviewLoops)).toHaveLength(2);
+    });
+
+    it('handles REVIEW_LOOP_CHANGED for existing review loop', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            reviewLoops: {'rl-1': makeReviewLoop({id: 'rl-1', phase: 'awaiting_review', iteration: 1})},
+        };
+        const state = reducer(prevState, {
+            type: REVIEW_LOOP_CHANGED,
+            data: {
+                review_loop_id: 'rl-1',
+                agent_record_id: 'agent-1',
+                phase: 'cursor_fixing',
+                iteration: 2,
+                pr_url: 'https://github.com/org/repo/pull/1',
+                updated_at: 2000,
+            },
+        });
+        expect(state.reviewLoops['rl-1'].phase).toBe('cursor_fixing');
+        expect(state.reviewLoops['rl-1'].iteration).toBe(2);
+        expect(state.reviewLoops['rl-1'].updated_at).toBe(2000);
+    });
+
+    it('REVIEW_LOOP_CHANGED ignores unknown review loop', () => {
+        const state = reducer(initialState, {
+            type: REVIEW_LOOP_CHANGED,
+            data: {
+                review_loop_id: 'unknown',
+                agent_record_id: 'agent-1',
+                phase: 'cursor_fixing',
+                iteration: 1,
+                pr_url: '',
+                updated_at: 2000,
+            },
+        });
+        expect(state).toEqual(initialState);
+    });
+
+    it('REVIEW_LOOP_CHANGED preserves existing pr_url when new value is empty', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            reviewLoops: {'rl-1': makeReviewLoop({id: 'rl-1', pr_url: 'https://github.com/org/repo/pull/1'})},
+        };
+        const state = reducer(prevState, {
+            type: REVIEW_LOOP_CHANGED,
+            data: {
+                review_loop_id: 'rl-1',
+                agent_record_id: 'agent-1',
+                phase: 'cursor_fixing',
+                iteration: 2,
+                pr_url: '',
+                updated_at: 3000,
+            },
+        });
+        expect(state.reviewLoops['rl-1'].pr_url).toBe('https://github.com/org/repo/pull/1');
+    });
+
+    it('REVIEW_LOOP_CHANGED propagates phase to associated agent', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {
+                'agent-1': makeAgent({id: 'agent-1'}),
+                'other-agent': makeAgent({id: 'other-agent'}),
+            },
+            reviewLoops: {'rl-1': makeReviewLoop({id: 'rl-1', agent_record_id: 'agent-1'})},
+        };
+        const state = reducer(prevState, {
+            type: REVIEW_LOOP_CHANGED,
+            data: {
+                review_loop_id: 'rl-1',
+                agent_record_id: 'agent-1',
+                phase: 'approved',
+                iteration: 1,
+                pr_url: 'https://github.com/org/repo/pull/1',
+                updated_at: 5000,
+            },
+        });
+        expect(state.agents['agent-1'].review_loop_id).toBe('rl-1');
+        expect(state.agents['agent-1'].review_loop_phase).toBe('approved');
+        expect(state.agents['agent-1'].review_loop_iteration).toBe(1);
+
+        // Unrelated agent should not be touched.
+        expect(state.agents['other-agent'].review_loop_phase).toBeUndefined();
+    });
+
+    it('REVIEW_LOOP_CHANGED does not mutate agents when agent_record_id not in state', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {
+                'other-agent': makeAgent({id: 'other-agent'}),
+            },
+            reviewLoops: {'rl-1': makeReviewLoop({id: 'rl-1', agent_record_id: 'agent-1'})},
+        };
+        const state = reducer(prevState, {
+            type: REVIEW_LOOP_CHANGED,
+            data: {
+                review_loop_id: 'rl-1',
+                agent_record_id: 'agent-1',
+                phase: 'cursor_fixing',
+                iteration: 2,
+                pr_url: '',
+                updated_at: 6000,
             },
         });
 
