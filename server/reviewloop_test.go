@@ -44,6 +44,10 @@ func (m *mockGitHubClient) ListReviews(ctx context.Context, owner, repo string, 
 	return args.Get(0).([]*github.PullRequestReview), args.Error(1)
 }
 
+func (m *mockGitHubClient) MarkPRReadyForReview(ctx context.Context, owner, repo string, prNumber int) error {
+	return m.Called(ctx, owner, repo, prNumber).Error(0)
+}
+
 func (m *mockGitHubClient) ListReviewComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, error) {
 	args := m.Called(ctx, owner, repo, prNumber)
 	if args.Get(0) == nil {
@@ -66,7 +70,7 @@ func setupReviewLoopTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVSt
 	p.githubClient = ghMock
 	p.configuration = &configuration{
 		CursorAPIKey:        "test-key",
-		EnableAIReviewLoop:  true,
+		EnableAIReviewLoop:  "true",
 		MaxReviewIterations: 5,
 		AIReviewerBots:      "coderabbitai[bot],copilot-pull-request-reviewer",
 		GitHubPAT:           "ghp_test",
@@ -114,6 +118,9 @@ func TestStartReviewLoop(t *testing.T) {
 			loop.PRNumber == 42 &&
 			loop.AgentRecordID == "agent-1"
 	})).Return(nil)
+
+	// Mark PR ready for review.
+	ghMock.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 42).Return(nil)
 
 	// Request reviewers.
 	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(nil)
@@ -183,6 +190,9 @@ func TestStartReviewLoop_RequestReviewersFails(t *testing.T) {
 
 	// Save for initial creation and failed transition.
 	store.On("SaveReviewLoop", mock.Anything).Return(nil)
+
+	// Mark PR ready for review.
+	ghMock.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 42).Return(nil)
 
 	// RequestReviewers fails.
 	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(fmt.Errorf("404 not found"))

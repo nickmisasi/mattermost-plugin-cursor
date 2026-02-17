@@ -408,7 +408,7 @@ func (p *Plugin) resolveDefaults(post *model.Post, parsed *parser.ParsedMention)
 	repo = config.DefaultRepository
 	branch = config.DefaultBranch
 	modelName = config.DefaultModel
-	autoCreatePR = config.AutoCreatePR
+	autoCreatePR = boolFromStr(config.AutoCreatePR)
 
 	// Override with user-level settings (if set).
 	userSettings, _ := p.kvstore.GetUserSettings(post.UserId)

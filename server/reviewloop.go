@@ -73,6 +73,17 @@ func (p *Plugin) startReviewLoop(record *kvstore.AgentRecord) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
+		// Mark the PR as ready for review (Cursor creates PRs as drafts,
+		// and AI reviewers like CodeRabbit skip draft PRs).
+		if err := ghClient.MarkPRReadyForReview(ctx, prRef.Owner, prRef.Repo, prRef.Number); err != nil {
+			p.API.LogWarn("Failed to mark PR as ready for review (may already be non-draft)",
+				"error", err.Error(),
+				"pr_url", record.PrURL,
+			)
+			// Non-fatal: the PR may already be non-draft, or the token may lack permissions.
+			// Continue with requesting reviewers.
+		}
+
 		err := ghClient.RequestReviewers(ctx, prRef.Owner, prRef.Repo, prRef.Number, github.ReviewersRequest{
 			Reviewers: botUsernames,
 		})

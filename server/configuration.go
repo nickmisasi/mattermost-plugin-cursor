@@ -21,21 +21,27 @@ type configuration struct {
 	DefaultRepository       string `json:"DefaultRepository"`
 	DefaultBranch           string `json:"DefaultBranch"`
 	DefaultModel            string `json:"DefaultModel"`
-	AutoCreatePR            bool   `json:"AutoCreatePR"`
+	AutoCreatePR            string `json:"AutoCreatePR"`
 	PollIntervalSeconds     int    `json:"PollIntervalSeconds"`
 	GitHubWebhookSecret     string `json:"GitHubWebhookSecret"`
 	CursorAgentSystemPrompt string `json:"CursorAgentSystemPrompt"`
-	EnableDebugLogging      bool   `json:"EnableDebugLogging"`
-	EnableContextReview     bool   `json:"EnableContextReview"`
-	EnablePlanLoop          bool   `json:"EnablePlanLoop"`
+	EnableDebugLogging      string `json:"EnableDebugLogging"`
+	EnableContextReview     string `json:"EnableContextReview"`
+	EnablePlanLoop          string `json:"EnablePlanLoop"`
 	PlannerSystemPrompt     string `json:"PlannerSystemPrompt"`
 
 	// --- AI Review Loop settings ---
 	GitHubPAT           string `json:"GitHubPAT"`
-	EnableAIReviewLoop  bool   `json:"EnableAIReviewLoop"`
+	EnableAIReviewLoop  string `json:"EnableAIReviewLoop"`
 	MaxReviewIterations int    `json:"MaxReviewIterations"`
 	AIReviewerBots      string `json:"AIReviewerBots"`
 	HumanReviewTeam     string `json:"HumanReviewTeam"`
+}
+
+// boolFromStr converts a Mattermost plugin config string ("true"/"false") to bool.
+// Mattermost stores "type": "bool" plugin settings as string values.
+func boolFromStr(s string) bool {
+	return strings.EqualFold(strings.TrimSpace(s), "true")
 }
 
 // Clone shallow copies the configuration.
@@ -161,10 +167,10 @@ func (p *Plugin) OnConfigurationChange() error {
 		// report the specific issue.
 	}
 
-	if cfg.EnableAIReviewLoop && cfg.GitHubPAT == "" {
+	if boolFromStr(cfg.EnableAIReviewLoop) && cfg.GitHubPAT == "" {
 		p.API.LogWarn("EnableAIReviewLoop is enabled but GitHubPAT is not set; review loop will not activate")
 	}
-	if cfg.EnableAIReviewLoop && cfg.CursorAPIKey == "" {
+	if boolFromStr(cfg.EnableAIReviewLoop) && cfg.CursorAPIKey == "" {
 		p.API.LogWarn("EnableAIReviewLoop is enabled but CursorAPIKey is not set; review loop will not activate")
 	}
 

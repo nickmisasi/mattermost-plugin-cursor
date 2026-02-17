@@ -312,9 +312,9 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        true,
-		EnableContextReview: false, // Default to false so existing tests pass unchanged.
-		EnablePlanLoop:      false,
+		AutoCreatePR:        "true",
+		EnableContextReview: "false", // Default to false so existing tests pass unchanged.
+		EnablePlanLoop:      "false",
 	}
 
 	return p, api, cursorClient, store
@@ -1117,9 +1117,9 @@ func TestMessageHasBeenPosted_ContextReviewEnabled_PostsReviewInsteadOfLaunching
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        true,
-		EnableContextReview: true, // HITL enabled.
-		EnablePlanLoop:      false,
+		AutoCreatePR:        "true",
+		EnableContextReview: "true", // HITL enabled.
+		EnablePlanLoop:      "false",
 	}
 
 	siteURL := "http://localhost:8065"
@@ -1210,9 +1210,9 @@ func TestMessageHasBeenPosted_DirectFlag_SkipsBothHITL(t *testing.T) {
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        true,
-		EnableContextReview: true,
-		EnablePlanLoop:      true,
+		AutoCreatePR:        "true",
+		EnableContextReview: "true",
+		EnablePlanLoop:      "true",
 	}
 
 	post := &model.Post{
@@ -1249,9 +1249,9 @@ func TestMessageHasBeenPosted_NoReviewFlag_SkipsContextReviewOnly(t *testing.T) 
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        true,
-		EnableContextReview: true,
-		EnablePlanLoop:      false,
+		AutoCreatePR:        "true",
+		EnableContextReview: "true",
+		EnablePlanLoop:      "false",
 	}
 
 	post := &model.Post{

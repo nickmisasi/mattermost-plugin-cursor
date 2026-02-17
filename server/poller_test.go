@@ -619,7 +619,7 @@ func TestPoller_FinishedWithPR_StartsReviewLoop(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
 	// Enable review loop.
-	p.configuration.EnableAIReviewLoop = true
+	p.configuration.EnableAIReviewLoop = "true"
 	p.configuration.GitHubPAT = "ghp_test"
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
 
@@ -656,6 +656,7 @@ func TestPoller_FinishedWithPR_StartsReviewLoop(t *testing.T) {
 	// Review loop mocks.
 	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
 	store.On("SaveReviewLoop", mock.Anything).Return(nil)
+	ghMock.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 42).Return(nil)
 	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(nil)
 
 	p.pollAgentStatuses()
@@ -669,7 +670,7 @@ func TestPoller_FinishedWithPR_ReviewLoopDisabled(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
 	// Review loop NOT enabled.
-	p.configuration.EnableAIReviewLoop = false
+	p.configuration.EnableAIReviewLoop = "false"
 
 	record := &kvstore.AgentRecord{
 		CursorAgentID:  "agent-1",
@@ -707,7 +708,7 @@ func TestPoller_FinishedWithPR_ReviewLoopDisabled(t *testing.T) {
 func TestPoller_FinishedNoPR_NoReviewLoop(t *testing.T) {
 	p, api, cursorClient, store := setupPollerPlugin(t)
 
-	p.configuration.EnableAIReviewLoop = true
+	p.configuration.EnableAIReviewLoop = "true"
 	p.configuration.GitHubPAT = "ghp_test"
 
 	record := &kvstore.AgentRecord{

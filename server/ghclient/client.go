@@ -22,6 +22,11 @@ type Client interface {
 
 	// ListReviewComments returns all inline review comments on a PR (auto-paginates).
 	ListReviewComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, error)
+
+	// MarkPRReadyForReview transitions a draft PR to ready-for-review.
+	// This is required because Cursor creates PRs as drafts, and AI reviewers
+	// (e.g., CodeRabbit) skip draft PRs.
+	MarkPRReadyForReview(ctx context.Context, owner, repo string, prNumber int) error
 }
 
 // clientImpl implements Client by delegating to go-github.
@@ -73,6 +78,12 @@ func (c *clientImpl) ListReviews(ctx context.Context, owner, repo string, prNumb
 		opts.Page = resp.NextPage
 	}
 	return all, nil
+}
+
+func (c *clientImpl) MarkPRReadyForReview(ctx context.Context, owner, repo string, prNumber int) error {
+	draft := false
+	_, _, err := c.gh.PullRequests.Edit(ctx, owner, repo, prNumber, &github.PullRequest{Draft: &draft})
+	return err
 }
 
 func (c *clientImpl) ListReviewComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, error) {

@@ -22,8 +22,8 @@ func boolPtr(v bool) *bool { return &v }
 func TestResolveHITLFlags_GlobalDefaults(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: true,
-		EnablePlanLoop:      true,
+		EnableContextReview: "true",
+		EnablePlanLoop:      "true",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
@@ -37,8 +37,8 @@ func TestResolveHITLFlags_GlobalDefaults(t *testing.T) {
 func TestResolveHITLFlags_GlobalDisabled(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: false,
-		EnablePlanLoop:      false,
+		EnableContextReview: "false",
+		EnablePlanLoop:      "false",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
@@ -52,8 +52,8 @@ func TestResolveHITLFlags_GlobalDisabled(t *testing.T) {
 func TestResolveHITLFlags_UserOverridesGlobal(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: true,
-		EnablePlanLoop:      true,
+		EnableContextReview: "true",
+		EnablePlanLoop:      "true",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(&kvstore.UserSettings{
@@ -70,7 +70,7 @@ func TestResolveHITLFlags_UserOverridesGlobal(t *testing.T) {
 func TestResolveHITLFlags_MentionOverridesUser(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: false,
+		EnableContextReview: "false",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(&kvstore.UserSettings{
@@ -86,8 +86,8 @@ func TestResolveHITLFlags_MentionOverridesUser(t *testing.T) {
 func TestResolveHITLFlags_Direct(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: true,
-		EnablePlanLoop:      true,
+		EnableContextReview: "true",
+		EnablePlanLoop:      "true",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
@@ -101,8 +101,8 @@ func TestResolveHITLFlags_Direct(t *testing.T) {
 func TestResolveHITLFlags_NoReviewFlag(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: true,
-		EnablePlanLoop:      true,
+		EnableContextReview: "true",
+		EnablePlanLoop:      "true",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
@@ -116,8 +116,8 @@ func TestResolveHITLFlags_NoReviewFlag(t *testing.T) {
 func TestResolveHITLFlags_NoPlanFlag(t *testing.T) {
 	p, _, _, store := setupTestPlugin(t)
 	p.configuration = &configuration{
-		EnableContextReview: true,
-		EnablePlanLoop:      true,
+		EnableContextReview: "true",
+		EnablePlanLoop:      "true",
 	}
 
 	store.On("GetUserSettings", "user-1").Return(nil, nil)
@@ -149,8 +149,8 @@ func TestStartContextReview_CreatesWorkflowAndPostsAttachment(t *testing.T) {
 	p.botUserID = "bot-user-id"
 	p.botUsername = "cursor"
 	p.configuration = &configuration{
-		EnableContextReview: true,
-		EnablePlanLoop:      false,
+		EnableContextReview: "true",
+		EnablePlanLoop:      "false",
 	}
 
 	// Mock GetConfig for getPluginURL.
@@ -219,7 +219,7 @@ func TestStartContextReview_KVSaveFailure_PostsFallbackMessage(t *testing.T) {
 	p.botUserID = "bot-user-id"
 	p.botUsername = "cursor"
 	p.configuration = &configuration{
-		EnableContextReview: true,
+		EnableContextReview: "true",
 	}
 
 	post := &model.Post{

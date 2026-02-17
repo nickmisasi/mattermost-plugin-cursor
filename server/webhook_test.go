@@ -760,7 +760,7 @@ func TestWebhook_BotReviewTriggersReviewLoop(t *testing.T) {
 	api := p.API.(*mockPluginAPI)
 
 	// Enable AI review loop config.
-	p.configuration.EnableAIReviewLoop = true
+	p.configuration.EnableAIReviewLoop = "true"
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
 
 	loop := &kvstore.ReviewLoop{
@@ -832,7 +832,7 @@ func TestWebhook_HumanReviewApproval(t *testing.T) {
 	api := p.API.(*mockPluginAPI)
 
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
-	p.configuration.EnableAIReviewLoop = true
+	p.configuration.EnableAIReviewLoop = "true"
 
 	// Active review loop in human_review phase for this PR.
 	loop := &kvstore.ReviewLoop{

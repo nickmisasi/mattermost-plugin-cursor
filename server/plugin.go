@@ -64,7 +64,7 @@ type Plugin struct {
 
 // logDebug logs a debug message only when EnableDebugLogging is true.
 func (p *Plugin) logDebug(msg string, keyValuePairs ...any) {
-	if p.getConfiguration().EnableDebugLogging {
+	if boolFromStr(p.getConfiguration().EnableDebugLogging) {
 		p.API.LogDebug(msg, keyValuePairs...)
 	}
 }
