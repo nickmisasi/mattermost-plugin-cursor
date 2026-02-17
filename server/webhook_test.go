@@ -665,6 +665,92 @@ func TestTruncateText_LongReviewBody(t *testing.T) {
 	assert.True(t, result[len(result)-3:] == "...")
 }
 
+func TestSanitizeReviewBodyForMattermost(t *testing.T) {
+	t.Run("removes details tags", func(t *testing.T) {
+		input := "<details>Some hidden content</details>"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.NotContains(t, result, "<details>")
+		assert.NotContains(t, result, "</details>")
+		assert.Contains(t, result, "Some hidden content")
+	})
+
+	t.Run("converts summary to bold", func(t *testing.T) {
+		input := "<summary>Walkthrough</summary>"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.Equal(t, "**Walkthrough**", result)
+	})
+
+	t.Run("converts blockquote to markdown quote", func(t *testing.T) {
+		input := "<blockquote>This is quoted text</blockquote>"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.Equal(t, "> This is quoted text", result)
+	})
+
+	t.Run("converts multiline blockquote", func(t *testing.T) {
+		input := "<blockquote>Line one\nLine two</blockquote>"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.Contains(t, result, "> Line one")
+		assert.Contains(t, result, "> Line two")
+	})
+
+	t.Run("strips remaining HTML tags", func(t *testing.T) {
+		input := "Hello <b>bold</b> and <i>italic</i> world"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.Equal(t, "Hello bold and italic world", result)
+	})
+
+	t.Run("collapses excessive blank lines", func(t *testing.T) {
+		input := "Line one\n\n\n\n\nLine two"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.Equal(t, "Line one\n\nLine two", result)
+	})
+
+	t.Run("handles case insensitive tags", func(t *testing.T) {
+		input := "<DETAILS><SUMMARY>Title</SUMMARY>Content</DETAILS>"
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.Contains(t, result, "**Title**")
+		assert.Contains(t, result, "Content")
+		assert.NotContains(t, result, "<")
+	})
+
+	t.Run("handles typical CodeRabbit review body", func(t *testing.T) {
+		input := `<details>
+<summary>Walkthrough</summary>
+The changes introduce a new feature for handling webhooks.
+</details>
+
+<blockquote>Please review the error handling carefully.</blockquote>
+
+<details>
+<summary>Changes</summary>
+- Added webhook handler
+- Updated tests
+</details>`
+		result := sanitizeReviewBodyForMattermost(input)
+		assert.NotContains(t, result, "<details>")
+		assert.NotContains(t, result, "</details>")
+		assert.NotContains(t, result, "<summary>")
+		assert.NotContains(t, result, "<blockquote>")
+		assert.Contains(t, result, "**Walkthrough**")
+		assert.Contains(t, result, "**Changes**")
+		assert.Contains(t, result, "> Please review the error handling carefully.")
+	})
+
+	t.Run("empty string returns empty", func(t *testing.T) {
+		assert.Equal(t, "", sanitizeReviewBodyForMattermost(""))
+	})
+
+	t.Run("plain text passes through unchanged", func(t *testing.T) {
+		input := "This is plain text with no HTML."
+		assert.Equal(t, input, sanitizeReviewBodyForMattermost(input))
+	})
+
+	t.Run("preserves markdown content", func(t *testing.T) {
+		input := "**Bold text** and `code` and [link](url)"
+		assert.Equal(t, input, sanitizeReviewBodyForMattermost(input))
+	})
+}
+
 // mockPluginAPI type alias for the plugintest.API used in setupTestPlugin.
 // This is needed because setupTestPlugin stores the mock as plugin.API interface.
 type mockPluginAPI = plugintest.API

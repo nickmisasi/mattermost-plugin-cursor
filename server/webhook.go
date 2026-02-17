@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -391,7 +392,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 			TitleLink: reviewURL,
 		}
 	case reviewStateChangesRequested:
-		bodyText := truncateText(event.Review.Body, 200)
+		bodyText := truncateText(sanitizeReviewBodyForMattermost(event.Review.Body), 200)
 		reviewAttachment = &model.SlackAttachment{
 			Color:     "#D24B4E", // red (changes requested)
 			Title:     fmt.Sprintf("%s: %s requested changes", prTitle, reviewer),
@@ -399,7 +400,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 			Text:      bodyText,
 		}
 	case reviewStateCommented:
-		bodyText := truncateText(event.Review.Body, 200)
+		bodyText := truncateText(sanitizeReviewBodyForMattermost(event.Review.Body), 200)
 		if bodyText == "" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -478,6 +479,37 @@ func (p *Plugin) swapReaction(postID, removeEmoji, addEmoji string) {
 	}
 	p.removeReaction(postID, removeEmoji)
 	p.addReaction(postID, addEmoji)
+}
+
+// sanitizeReviewBodyForMattermost converts common HTML tags (from tools like
+// CodeRabbit) into Markdown equivalents suitable for Mattermost posts.
+func sanitizeReviewBodyForMattermost(body string) string {
+	// Remove <details> and </details> tags.
+	body = regexp.MustCompile(`(?i)</?details>`).ReplaceAllString(body, "")
+
+	// Convert <summary>text</summary> to **text**.
+	body = regexp.MustCompile(`(?i)<summary>(.*?)</summary>`).ReplaceAllString(body, "**$1**")
+
+	// Convert <blockquote>text</blockquote> to > quoted lines.
+	body = regexp.MustCompile(`(?is)<blockquote>(.*?)</blockquote>`).ReplaceAllStringFunc(body, func(match string) string {
+		inner := regexp.MustCompile(`(?is)<blockquote>(.*?)</blockquote>`).FindStringSubmatch(match)
+		if len(inner) > 1 {
+			lines := strings.Split(strings.TrimSpace(inner[1]), "\n")
+			for i, l := range lines {
+				lines[i] = "> " + strings.TrimSpace(l)
+			}
+			return strings.Join(lines, "\n")
+		}
+		return match
+	})
+
+	// Strip remaining HTML tags.
+	body = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(body, "")
+
+	// Clean up excessive blank lines.
+	body = regexp.MustCompile(`\n{3,}`).ReplaceAllString(body, "\n\n")
+
+	return strings.TrimSpace(body)
 }
 
 // truncateText truncates a string to maxLen characters, appending "..." if truncated.

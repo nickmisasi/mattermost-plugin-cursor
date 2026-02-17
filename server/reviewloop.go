@@ -322,7 +322,7 @@ func (p *Plugin) collectReviewFeedback(loop *kvstore.ReviewLoop) (string, error)
 		commentNum++
 		file := c.GetPath()
 		line := c.GetLine()
-		body := c.GetBody()
+		body := sanitizeReviewBodyForMattermost(c.GetBody())
 
 		switch {
 		case file != "" && line > 0:
@@ -352,6 +352,7 @@ func (p *Plugin) collectReviewFeedback(loop *kvstore.ReviewLoop) (string, error)
 			if strings.Contains(body, "Actionable comments posted: 0") {
 				continue
 			}
+			body = sanitizeReviewBodyForMattermost(body)
 			if commentNum == 0 {
 				sb.WriteString("**Review summary:**\n")
 			}
