@@ -190,6 +190,7 @@ func (h *Handler) executeLaunch(args *model.CommandArgs) (*model.CommandResponse
 		Target: &cursor.Target{
 			BranchName:   fmt.Sprintf("cursor/%s", sanitizeBranchName(parsed.Prompt)),
 			AutoCreatePr: autoCreatePR,
+			AutoBranch:   true,
 		},
 		Model: cursorModel,
 	}

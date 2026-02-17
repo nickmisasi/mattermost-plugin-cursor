@@ -307,6 +307,7 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 		Target: &cursor.Target{
 			BranchName:   sanitizeBranchName(parsed.Prompt),
 			AutoCreatePr: autoCreatePR,
+			AutoBranch:   true,
 		},
 		Model: modelName,
 	}
