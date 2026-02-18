@@ -278,7 +278,7 @@ func TestWebhook_PRClosedNotMerged(t *testing.T) {
 	store.AssertExpectations(t)
 }
 
-func TestWebhook_PROpened_Ignored(t *testing.T) {
+func TestWebhook_PROpened_NoAgentFound(t *testing.T) {
 	p, store := setupWebhookTestPlugin(t)
 
 	event := PullRequestEvent{
@@ -286,13 +286,17 @@ func TestWebhook_PROpened_Ignored(t *testing.T) {
 		PullRequest: ghPullRequest{
 			Number:  10,
 			HTMLURL: "https://github.com/org/repo/pull/10",
+			Title:   "New feature",
 		},
 	}
+	event.PullRequest.Head.Ref = "cursor/new-feature"
 	body, _ := json.Marshal(event)
 	sig := signPayload(testWebhookSecret, body)
 
 	store.On("HasDeliveryBeenProcessed", "delivery-pr-opened").Return(false, nil)
 	store.On("MarkDeliveryProcessed", "delivery-pr-opened").Return(nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/10").Return(nil, nil)
+	store.On("GetAgentByBranch", "cursor/new-feature").Return(nil, nil)
 
 	req := makeWebhookRequest(t, "pull_request", "delivery-pr-opened", body, sig)
 	rr := httptest.NewRecorder()
@@ -300,9 +304,234 @@ func TestWebhook_PROpened_Ignored(t *testing.T) {
 	p.handleGitHubWebhook(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
-	// No agent lookup should happen for non-closed actions.
-	store.AssertNotCalled(t, "GetAgentByPRURL")
-	store.AssertNotCalled(t, "GetAgentByBranch")
+	// No agent found, so no save or notification.
+	store.AssertNotCalled(t, "SaveAgent")
+}
+
+func TestWebhook_PROpened_BackfillsPrURL(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-opened-1",
+		PostID:        "root-post-opened",
+		ChannelID:     "ch-opened",
+		UserID:        "user-1",
+		Status:        "RUNNING",
+		PrURL:         "", // empty -- should be backfilled
+		TargetBranch:  "", // empty -- should be backfilled
+	}
+
+	event := PullRequestEvent{
+		Action: "opened",
+		PullRequest: ghPullRequest{
+			Number:  10,
+			HTMLURL: "https://github.com/org/repo/pull/10",
+			Title:   "New feature",
+		},
+	}
+	event.PullRequest.Head.Ref = "cursor/new-feature"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-pr-opened-backfill").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-pr-opened-backfill").Return(nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/10").Return(nil, nil)
+	store.On("GetAgentByBranch", "cursor/new-feature").Return(agent, nil)
+
+	// Expect SaveAgent with backfilled PrURL and TargetBranch.
+	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.CursorAgentID == "agent-opened-1" &&
+			r.PrURL == "https://github.com/org/repo/pull/10" &&
+			r.TargetBranch == "cursor/new-feature" &&
+			r.UpdatedAt > 0
+	})).Return(nil)
+
+	// WebSocket event for RHS update.
+	api.On("PublishWebSocketEvent", "agent_status_change", mock.Anything, mock.Anything).Return()
+
+	// PR notification attachment post: blue color for opened PR.
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-post-opened" &&
+			post.ChannelId == "ch-opened" &&
+			hasAttachmentWithColor(post, "#2389D7")
+	})).Return(&model.Post{Id: "notif-opened-1"}, nil)
+
+	req := makeWebhookRequest(t, "pull_request", "delivery-pr-opened-backfill", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	store.AssertExpectations(t)
+}
+
+func TestWebhook_PROpened_SkipsIfRunning(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	// Agent is still RUNNING -- should NOT start review loop.
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-running-1",
+		PostID:        "root-post-running",
+		ChannelID:     "ch-running",
+		UserID:        "user-1",
+		Status:        "RUNNING",
+		PrURL:         "",
+	}
+
+	p.configuration.EnableAIReviewLoop = true
+
+	event := PullRequestEvent{
+		Action: "opened",
+		PullRequest: ghPullRequest{
+			Number:  11,
+			HTMLURL: "https://github.com/org/repo/pull/11",
+			Title:   "Feature X",
+		},
+	}
+	event.PullRequest.Head.Ref = "cursor/feature-x"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-pr-opened-running").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-pr-opened-running").Return(nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/11").Return(nil, nil)
+	store.On("GetAgentByBranch", "cursor/feature-x").Return(agent, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	api.On("PublishWebSocketEvent", "agent_status_change", mock.Anything, mock.Anything).Return()
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "notif-1"}, nil)
+
+	req := makeWebhookRequest(t, "pull_request", "delivery-pr-opened-running", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// Review loop should NOT be started since agent is still RUNNING.
+	store.AssertNotCalled(t, "GetReviewLoopByPRURL")
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestWebhook_PROpened_StartsReviewLoop(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	// Agent is FINISHED -- should start review loop.
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-finished-1",
+		PostID:        "root-post-finished",
+		TriggerPostID: "trigger-post-finished",
+		ChannelID:     "ch-finished",
+		UserID:        "user-1",
+		Status:        "FINISHED",
+		PrURL:         "", // will be backfilled
+		Repository:    "org/repo",
+	}
+
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	// Set up a mock GitHub client so the review loop condition passes.
+	mockGH := &mockGitHubClient{}
+	p.githubClient = mockGH
+
+	event := PullRequestEvent{
+		Action: "opened",
+		PullRequest: ghPullRequest{
+			Number:  12,
+			HTMLURL: "https://github.com/org/repo/pull/12",
+			Title:   "Fix bug",
+		},
+	}
+	event.PullRequest.Head.Ref = "cursor/fix-bug"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-pr-opened-loop").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-pr-opened-loop").Return(nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/12").Return(nil, nil)
+	store.On("GetAgentByBranch", "cursor/fix-bug").Return(agent, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	// startReviewLoop: idempotency check.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/12").Return(nil, nil)
+	// startReviewLoop: HITL workflow check.
+	store.On("GetWorkflowByAgent", "agent-finished-1").Return("", nil)
+	// startReviewLoop: save the review loop (called twice: create + phase update).
+	store.On("SaveReviewLoop", mock.Anything).Return(nil)
+
+	// startReviewLoop: GetAgent for inline status update.
+	store.On("GetAgent", "agent-finished-1").Return(agent, nil).Maybe()
+
+	// GitHub client: MarkPRReadyForReview + RequestReviewers.
+	mockGH.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 12).Return(nil)
+	mockGH.On("RequestReviewers", mock.Anything, "org", "repo", 12, mock.Anything).Return(nil)
+
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "notif-1"}, nil).Maybe()
+	api.On("GetPost", mock.Anything).Return(&model.Post{Id: "reply-1"}, nil).Maybe()
+	api.On("UpdatePost", mock.Anything).Return(&model.Post{}, nil).Maybe()
+	api.On("AddReaction", mock.Anything).Return(nil, nil).Maybe()
+
+	req := makeWebhookRequest(t, "pull_request", "delivery-pr-opened-loop", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// Verify review loop was saved.
+	store.AssertCalled(t, "SaveReviewLoop", mock.Anything)
+}
+
+func TestWebhook_PROpened_IdempotentPrURL(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	// Agent already has PrURL -- should NOT re-save.
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-idem-1",
+		PostID:        "root-post-idem",
+		ChannelID:     "ch-idem",
+		UserID:        "user-1",
+		Status:        "FINISHED",
+		PrURL:         "https://github.com/org/repo/pull/13",
+		TargetBranch:  "cursor/already-set",
+	}
+
+	event := PullRequestEvent{
+		Action: "opened",
+		PullRequest: ghPullRequest{
+			Number:  13,
+			HTMLURL: "https://github.com/org/repo/pull/13",
+			Title:   "Already linked",
+		},
+	}
+	event.PullRequest.Head.Ref = "cursor/already-set"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-pr-opened-idem").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-pr-opened-idem").Return(nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/13").Return(agent, nil)
+
+	// PR notification attachment post.
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-post-idem" &&
+			hasAttachmentWithColor(post, "#2389D7")
+	})).Return(&model.Post{Id: "notif-idem-1"}, nil)
+
+	req := makeWebhookRequest(t, "pull_request", "delivery-pr-opened-idem", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	// PrURL and TargetBranch were already set, so SaveAgent should NOT be called.
+	store.AssertNotCalled(t, "SaveAgent")
+	// WebSocket event should NOT be published since nothing changed.
+	api.AssertNotCalled(t, "PublishWebSocketEvent")
 }
 
 func TestWebhook_PRNotFound(t *testing.T) {
@@ -846,7 +1075,7 @@ func TestWebhook_BotReviewTriggersReviewLoop(t *testing.T) {
 	api := p.API.(*mockPluginAPI)
 
 	// Enable AI review loop config.
-	p.configuration.EnableAIReviewLoop = "true"
+	p.configuration.EnableAIReviewLoop = true
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
 
 	loop := &kvstore.ReviewLoop{
@@ -918,7 +1147,7 @@ func TestWebhook_HumanReviewApproval(t *testing.T) {
 	api := p.API.(*mockPluginAPI)
 
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
-	p.configuration.EnableAIReviewLoop = "true"
+	p.configuration.EnableAIReviewLoop = true
 
 	// Active review loop in human_review phase for this PR.
 	loop := &kvstore.ReviewLoop{

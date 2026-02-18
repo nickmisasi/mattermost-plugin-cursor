@@ -23,7 +23,8 @@ const (
 	prefixHITLAgent    = "hitlagent:"    // Reverse index: Cursor agent ID -> workflow ID
 	prefixReviewLoop   = "reviewloop:"   // ReviewLoop records
 	prefixRLByPR       = "rlbypr:"       // PR URL -> ReviewLoop ID index
-	prefixRLByAgent    = "rlbyagent:"    // Agent record ID -> ReviewLoop ID index
+	prefixRLByAgent      = "rlbyagent:"    // Agent record ID -> ReviewLoop ID index
+	prefixFinishedWithPR = "finishedpr:"   // Index for FINISHED agents with PrURL (janitor)
 )
 
 // hitlThreadPrefix is prepended to workflow IDs when stored in thread mappings
@@ -93,6 +94,13 @@ func (s *store) SaveAgent(record *AgentRecord) error {
 		_, _ = s.client.KV.Set(prefixBranchIdx+record.TargetBranch, record.CursorAgentID)
 	}
 
+	// Maintain finished-with-PR index for janitor sweep.
+	if record.PrURL != "" && !isActiveStatus(record.Status) {
+		_, _ = s.client.KV.Set(prefixFinishedWithPR+record.CursorAgentID, record.CursorAgentID)
+	} else {
+		_ = s.client.KV.Delete(prefixFinishedWithPR + record.CursorAgentID)
+	}
+
 	return nil
 }
 
@@ -105,6 +113,7 @@ func (s *store) DeleteAgent(cursorAgentID string) error {
 		return errors.Wrap(err, "failed to delete agent record")
 	}
 	_ = s.client.KV.Delete(prefixAgentIdx + cursorAgentID)
+	_ = s.client.KV.Delete(prefixFinishedWithPR + cursorAgentID)
 
 	if record != nil && record.UserID != "" {
 		_ = s.client.KV.Delete(prefixUserAgentIdx + record.UserID + ":" + cursorAgentID)
@@ -365,6 +374,11 @@ func (s *store) SaveReviewLoop(loop *ReviewLoop) error {
 		}
 	}
 
+	// Remove from janitor index since a loop now exists for this agent.
+	if loop.AgentRecordID != "" {
+		_ = s.client.KV.Delete(prefixFinishedWithPR + loop.AgentRecordID)
+	}
+
 	return nil
 }
 
@@ -411,4 +425,22 @@ func (s *store) GetReviewLoopByAgent(agentRecordID string) (*ReviewLoop, error) 
 		return nil, nil
 	}
 	return s.GetReviewLoop(reviewLoopID)
+}
+
+func (s *store) GetAllFinishedAgentsWithPR() ([]*AgentRecord, error) {
+	keys, err := s.client.KV.ListKeys(0, 1000, pluginapi.WithPrefix(prefixFinishedWithPR))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list finished-with-PR keys")
+	}
+	var agents []*AgentRecord
+	for _, key := range keys {
+		agentID := strings.TrimPrefix(key, prefixFinishedWithPR)
+		record, err := s.GetAgent(agentID)
+		if err != nil || record == nil {
+			_ = s.client.KV.Delete(key) // Clean up orphaned index entry.
+			continue
+		}
+		agents = append(agents, record)
+	}
+	return agents, nil
 }

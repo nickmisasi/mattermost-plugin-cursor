@@ -11,9 +11,52 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/mattermost/mattermost-plugin-cursor/server/attachments"
+	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/ghclient"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
+
+// ensureReviewLoop returns the existing ReviewLoop for the given PR URL,
+// or bootstraps a new one if the agent is in a terminal state and the
+// review loop feature is enabled. Returns nil if no loop can be created.
+func (p *Plugin) ensureReviewLoop(prURL string) *kvstore.ReviewLoop {
+	// Check for existing loop first.
+	loop, err := p.kvstore.GetReviewLoopByPRURL(prURL)
+	if err != nil {
+		p.API.LogError("Failed to look up review loop", "error", err.Error(), "pr_url", prURL)
+		return nil
+	}
+	if loop != nil {
+		return loop
+	}
+
+	// No loop exists. Try to bootstrap from the agent record.
+	if !p.getConfiguration().EnableAIReviewLoop || p.getGitHubClient() == nil {
+		return nil
+	}
+
+	agent, err := p.kvstore.GetAgentByPRURL(prURL)
+	if err != nil || agent == nil {
+		return nil
+	}
+
+	if !cursor.AgentStatus(agent.Status).IsTerminal() {
+		return nil // Agent not done yet; loop will start when it finishes.
+	}
+
+	if err := p.startReviewLoop(agent); err != nil {
+		p.API.LogError("Failed to bootstrap review loop from review webhook",
+			"error", err.Error(),
+			"agent_id", agent.CursorAgentID,
+			"pr_url", prURL,
+		)
+		return nil
+	}
+
+	// Refetch the freshly-created loop.
+	loop, _ = p.kvstore.GetReviewLoopByPRURL(prURL)
+	return loop
+}
 
 // startReviewLoop creates a ReviewLoop record and requests AI reviewers on the PR.
 // Called from handleAgentFinished when EnableAIReviewLoop is true and the agent has a PR URL.
@@ -62,52 +105,41 @@ func (p *Plugin) startReviewLoop(record *kvstore.AgentRecord) error {
 		return fmt.Errorf("failed to save review loop: %w", err)
 	}
 
-	// Request AI reviewers via GitHub API.
+	// Mark the PR as ready for review. Cursor creates PRs as drafts,
+	// and AI reviewers (e.g., CodeRabbit) skip draft PRs. If this fails,
+	// we abort and leave the loop in requesting_review so the janitor can
+	// retry on the next sweep.
+	ghClient := p.getGitHubClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := ghClient.MarkPRReadyForReview(ctx, prRef.Owner, prRef.Repo, prRef.Number); err != nil {
+		p.API.LogError("Failed to mark PR as ready for review; review loop will retry",
+			"error", err.Error(),
+			"pr_url", record.PrURL,
+		)
+		// Delete the loop record so the janitor can re-bootstrap it cleanly.
+		_ = p.kvstore.DeleteReviewLoop(loop.ID)
+		return fmt.Errorf("failed to mark PR as ready for review: %w", err)
+	}
+
+	// Request AI reviewers via GitHub API (optional -- bots like CodeRabbit
+	// auto-detect PRs, so this is a best-effort nudge).
 	config := p.getConfiguration()
 	botUsernames := config.ParseAIReviewerBots()
 	if len(botUsernames) == 0 {
-		p.API.LogWarn("No AI reviewer bots configured, skipping review request")
-		// Still transition to awaiting_review so webhooks can pick up reviews.
+		p.API.LogInfo("No AI reviewer bots configured, skipping explicit review request")
 	} else {
-		ghClient := p.getGitHubClient()
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		// Mark the PR as ready for review (Cursor creates PRs as drafts,
-		// and AI reviewers like CodeRabbit skip draft PRs).
-		if err := ghClient.MarkPRReadyForReview(ctx, prRef.Owner, prRef.Repo, prRef.Number); err != nil {
-			p.API.LogWarn("Failed to mark PR as ready for review (may already be non-draft)",
-				"error", err.Error(),
-				"pr_url", record.PrURL,
-			)
-			// Non-fatal: the PR may already be non-draft, or the token may lack permissions.
-			// Continue with requesting reviewers.
-		}
-
 		err := ghClient.RequestReviewers(ctx, prRef.Owner, prRef.Repo, prRef.Number, github.ReviewersRequest{
 			Reviewers: botUsernames,
 		})
 		if err != nil {
-			p.API.LogError("Failed to request AI reviewers",
+			p.API.LogWarn("Failed to request AI reviewers (non-fatal, bots may auto-detect the PR)",
 				"error", err.Error(),
 				"pr_url", record.PrURL,
 				"reviewers", strings.Join(botUsernames, ", "),
 			)
-			// Transition to failed if we can't request reviewers.
-			loop.Phase = kvstore.ReviewPhaseFailed
-			loop.History = append(loop.History, kvstore.ReviewLoopEvent{
-				Phase:     kvstore.ReviewPhaseFailed,
-				Timestamp: time.Now().UnixMilli(),
-				Detail:    "Failed to request AI reviewers: " + err.Error(),
-			})
-			loop.UpdatedAt = time.Now().UnixMilli()
-			_ = p.kvstore.SaveReviewLoop(loop)
-			p.updateReviewLoopInlineStatus(loop)
-			p.publishReviewLoopChange(loop)
-			p.postReviewLoopCompletion(loop, attachments.BuildReviewFailedAttachment(
-				"Failed to request AI reviewers. Check that the reviewer bots are installed on the repository.",
-			))
-			return fmt.Errorf("failed to request reviewers: %w", err)
+			// Non-fatal: bots like CodeRabbit auto-detect new PRs.
 		}
 	}
 
@@ -116,7 +148,7 @@ func (p *Plugin) startReviewLoop(record *kvstore.AgentRecord) error {
 	loop.History = append(loop.History, kvstore.ReviewLoopEvent{
 		Phase:     kvstore.ReviewPhaseAwaitingReview,
 		Timestamp: time.Now().UnixMilli(),
-		Detail:    fmt.Sprintf("Requested: %s", strings.Join(botUsernames, ", ")),
+		Detail:    reviewLoopAwaitDetail(botUsernames),
 	})
 	loop.UpdatedAt = time.Now().UnixMilli()
 	if err := p.kvstore.SaveReviewLoop(loop); err != nil {
@@ -493,6 +525,15 @@ func (p *Plugin) handleHumanReviewApproval(loop *kvstore.ReviewLoop, reviewer st
 	p.publishReviewLoopChange(loop)
 
 	return nil
+}
+
+// reviewLoopAwaitDetail returns a human-readable detail string for the
+// awaiting_review history entry.
+func reviewLoopAwaitDetail(bots []string) string {
+	if len(bots) == 0 {
+		return "Awaiting AI review (auto-detection)"
+	}
+	return fmt.Sprintf("Requested: %s", strings.Join(bots, ", "))
 }
 
 // isAIReviewerBot checks if the given GitHub username matches a configured AI reviewer bot.

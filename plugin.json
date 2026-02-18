@@ -58,14 +58,14 @@
                 "display_name": "Auto-Create Pull Requests",
                 "type": "bool",
                 "help_text": "When enabled, agents automatically create pull requests on completion. Users can override per-message with autopr=false.",
-                "default": "true"
+                "default": true
             },
             {
                 "key": "PollIntervalSeconds",
                 "display_name": "Status Poll Interval (seconds)",
                 "type": "number",
                 "help_text": "How often the plugin checks for agent status changes. Minimum 10 seconds. Lower values increase API usage.",
-                "default": "30",
+                "default": 30,
                 "placeholder": "30"
             },
             {
@@ -88,14 +88,14 @@
                 "display_name": "Enable Context Review (HITL)",
                 "type": "bool",
                 "help_text": "When enabled, the bot posts enriched context for user review before launching an agent. Users can approve, reject, or iterate on the context. Disable to skip this step and launch agents immediately.",
-                "default": "true"
+                "default": true
             },
             {
                 "key": "EnablePlanLoop",
                 "display_name": "Enable Plan Loop (HITL)",
                 "type": "bool",
                 "help_text": "When enabled, a planning-only agent analyzes the codebase and produces an implementation plan for user review before the implementation agent is launched. Users can iterate on the plan. Disable to skip planning and go straight to implementation.",
-                "default": "true"
+                "default": true
             },
             {
                 "key": "PlannerSystemPrompt",
@@ -117,14 +117,14 @@
                 "display_name": "Enable AI Review Loop",
                 "type": "bool",
                 "help_text": "When enabled, completed agents with PRs automatically get AI reviews (CodeRabbit + Copilot). Feedback is sent back to Cursor for fixes. Requires both Cursor API Key and GitHub PAT.",
-                "default": "false"
+                "default": false
             },
             {
                 "key": "MaxReviewIterations",
                 "display_name": "Max Review Iterations",
                 "type": "number",
                 "help_text": "Maximum number of AI review fix-and-re-review cycles before requiring manual intervention. Range: 1-20.",
-                "default": "5",
+                "default": 5,
                 "placeholder": "5"
             },
             {
@@ -132,7 +132,7 @@
                 "display_name": "AI Reviewer Bot Usernames",
                 "type": "text",
                 "help_text": "Comma-separated GitHub usernames of AI reviewer bots to request as reviewers on PRs.",
-                "default": "coderabbitai[bot],copilot-pull-request-reviewer",
+                "default": "",
                 "placeholder": "coderabbitai[bot],copilot-pull-request-reviewer"
             },
             {
@@ -147,7 +147,7 @@
                 "display_name": "Enable Debug Logging",
                 "type": "bool",
                 "help_text": "When enabled, the plugin logs detailed debug information including API request/response bodies. Disable in production to reduce log noise.",
-                "default": "false"
+                "default": false
             }
         ]
     }

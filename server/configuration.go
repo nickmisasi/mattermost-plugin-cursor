@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/ghclient"
 )
@@ -21,27 +19,21 @@ type configuration struct {
 	DefaultRepository       string `json:"DefaultRepository"`
 	DefaultBranch           string `json:"DefaultBranch"`
 	DefaultModel            string `json:"DefaultModel"`
-	AutoCreatePR            string `json:"AutoCreatePR"`
+	AutoCreatePR            bool   `json:"AutoCreatePR"`
 	PollIntervalSeconds     int    `json:"PollIntervalSeconds"`
 	GitHubWebhookSecret     string `json:"GitHubWebhookSecret"`
 	CursorAgentSystemPrompt string `json:"CursorAgentSystemPrompt"`
-	EnableDebugLogging      string `json:"EnableDebugLogging"`
-	EnableContextReview     string `json:"EnableContextReview"`
-	EnablePlanLoop          string `json:"EnablePlanLoop"`
+	EnableDebugLogging      bool   `json:"EnableDebugLogging"`
+	EnableContextReview     bool   `json:"EnableContextReview"`
+	EnablePlanLoop          bool   `json:"EnablePlanLoop"`
 	PlannerSystemPrompt     string `json:"PlannerSystemPrompt"`
 
 	// --- AI Review Loop settings ---
 	GitHubPAT           string `json:"GitHubPAT"`
-	EnableAIReviewLoop  string `json:"EnableAIReviewLoop"`
+	EnableAIReviewLoop  bool   `json:"EnableAIReviewLoop"`
 	MaxReviewIterations int    `json:"MaxReviewIterations"`
 	AIReviewerBots      string `json:"AIReviewerBots"`
 	HumanReviewTeam     string `json:"HumanReviewTeam"`
-}
-
-// boolFromStr converts a Mattermost plugin config string ("true"/"false") to bool.
-// Mattermost stores "type": "bool" plugin settings as string values.
-func boolFromStr(s string) bool {
-	return strings.EqualFold(strings.TrimSpace(s), "true")
 }
 
 // Clone shallow copies the configuration.
@@ -130,9 +122,8 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 func (p *Plugin) OnConfigurationChange() error {
 	cfg := new(configuration)
 
-	if err := p.API.LoadPluginConfiguration(cfg); err != nil {
-		return errors.Wrap(err, "failed to load plugin configuration")
-	}
+	// Load config from Mattermost server.
+	_ = p.API.LoadPluginConfiguration(cfg)
 
 	// Apply defaults for fields that have default values in plugin.json
 	// but may not be set yet (e.g., fresh install).
@@ -167,11 +158,15 @@ func (p *Plugin) OnConfigurationChange() error {
 		// report the specific issue.
 	}
 
-	if boolFromStr(cfg.EnableAIReviewLoop) && cfg.GitHubPAT == "" {
+	if cfg.EnableAIReviewLoop && cfg.GitHubPAT == "" {
 		p.API.LogWarn("EnableAIReviewLoop is enabled but GitHubPAT is not set; review loop will not activate")
 	}
-	if boolFromStr(cfg.EnableAIReviewLoop) && cfg.CursorAPIKey == "" {
+	if cfg.EnableAIReviewLoop && cfg.CursorAPIKey == "" {
 		p.API.LogWarn("EnableAIReviewLoop is enabled but CursorAPIKey is not set; review loop will not activate")
+	}
+	if cfg.EnableAIReviewLoop && cfg.GitHubWebhookSecret == "" {
+		p.API.LogWarn("EnableAIReviewLoop is enabled but GitHubWebhookSecret is not set; " +
+			"review loop will work but with degraded latency (janitor-only mode)")
 	}
 
 	// Validate the Cursor API key by making a lightweight API call.

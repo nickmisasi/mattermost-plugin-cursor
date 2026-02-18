@@ -56,12 +56,29 @@ func (m *mockGitHubClient) ListReviewComments(ctx context.Context, owner, repo s
 	return args.Get(0).([]*github.PullRequestComment), args.Error(1)
 }
 
+func (m *mockGitHubClient) GetPullRequestByBranch(ctx context.Context, owner, repo, branch string) (*github.PullRequest, error) {
+	args := m.Called(ctx, owner, repo, branch)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*github.PullRequest), args.Error(1)
+}
+
 func setupReviewLoopTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVStore, *mockGitHubClient) {
 	t.Helper()
 	p, api, _, store := setupTestPlugin(t)
 
 	// Add broader LogError mock for review loop functions that pass 7+ args.
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	// Add LogWarn mock for non-fatal warnings (reviewer request failures, etc.).
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	// Add LogInfo mock.
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 	// Default mock for publishReviewLoopChange WebSocket events.
 	api.On("PublishWebSocketEvent", "review_loop_changed", mock.Anything, mock.Anything).Return().Maybe()
@@ -70,7 +87,7 @@ func setupReviewLoopTestPlugin(t *testing.T) (*Plugin, *mockPluginAPI, *mockKVSt
 	p.githubClient = ghMock
 	p.configuration = &configuration{
 		CursorAPIKey:        "test-key",
-		EnableAIReviewLoop:  "true",
+		EnableAIReviewLoop:  true,
 		MaxReviewIterations: 5,
 		AIReviewerBots:      "coderabbitai[bot],copilot-pull-request-reviewer",
 		GitHubPAT:           "ghp_test",
@@ -188,24 +205,25 @@ func TestStartReviewLoop_RequestReviewersFails(t *testing.T) {
 	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 
-	// Save for initial creation and failed transition.
+	// Save for initial creation and awaiting_review transition.
 	store.On("SaveReviewLoop", mock.Anything).Return(nil)
 
 	// Mark PR ready for review.
 	ghMock.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 42).Return(nil)
 
-	// RequestReviewers fails.
+	// RequestReviewers fails -- non-fatal, bots auto-detect PRs.
 	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(fmt.Errorf("404 not found"))
 
-	// Inline status update + completion post (failure).
+	// Inline status update (loop transitions to awaiting_review).
 	mockInlineStatusUpdate(store, api, "agent-1", record)
-	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
-		return post.RootId == "root-1" && hasAttachmentWithTitle(post, "AI review loop failed.")
-	})).Return(&model.Post{Id: "notif-1"}, nil)
+
+	// eyes reaction on trigger post.
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
 
 	err := p.startReviewLoop(record)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to request reviewers")
+	require.NoError(t, err) // Non-fatal: reviewer request failure doesn't fail the loop.
 }
 
 func TestHandleAIReview_CodeRabbitApproved(t *testing.T) {
@@ -673,4 +691,160 @@ func TestHandleHumanReviewApproval(t *testing.T) {
 
 	store.AssertExpectations(t)
 	api.AssertExpectations(t)
+}
+
+// --- ensureReviewLoop tests ---
+
+func TestEnsureReviewLoop_ExistingLoop(t *testing.T) {
+	p, _, store, _ := setupReviewLoopTestPlugin(t)
+
+	existingLoop := &kvstore.ReviewLoop{
+		ID:    "existing-loop-1",
+		PRURL: "https://github.com/org/repo/pull/42",
+		Phase: kvstore.ReviewPhaseAwaitingReview,
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(existingLoop, nil)
+
+	result := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	require.NotNil(t, result)
+	assert.Equal(t, "existing-loop-1", result.ID)
+
+	// Should NOT have tried to look up an agent or start a new loop.
+	store.AssertNotCalled(t, "GetAgentByPRURL")
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestEnsureReviewLoop_BootstrapsFromAgent(t *testing.T) {
+	p, api, store, ghMock := setupReviewLoopTestPlugin(t)
+
+	agent := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		UserID:         "user-1",
+		ChannelID:      "ch-1",
+		PostID:         "root-1",
+		TriggerPostID:  "trigger-1",
+		BotReplyPostID: "reply-1",
+		PrURL:          "https://github.com/org/repo/pull/42",
+		Status:         "FINISHED",
+		Repository:     "org/repo",
+	}
+
+	// Call 1: ensureReviewLoop checks for existing loop -> nil.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil).Once()
+
+	// Agent lookup by PR URL.
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(agent, nil)
+
+	// Call 2: startReviewLoop idempotency check -> nil.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil).Once()
+
+	// startReviewLoop mocks.
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("SaveReviewLoop", mock.MatchedBy(func(loop *kvstore.ReviewLoop) bool {
+		return loop.AgentRecordID == "agent-1" && loop.Owner == "org" && loop.Repo == "repo"
+	})).Return(nil)
+	ghMock.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 42).Return(nil)
+	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(nil)
+	mockInlineStatusUpdate(store, api, "agent-1", agent)
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.PostId == "trigger-1" && r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	// Call 3: ensureReviewLoop refetches the freshly-created loop.
+	createdLoop := &kvstore.ReviewLoop{
+		ID:            "new-loop-1",
+		AgentRecordID: "agent-1",
+		Phase:         kvstore.ReviewPhaseAwaitingReview,
+		PRURL:         "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(createdLoop, nil).Once()
+
+	result := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	require.NotNil(t, result)
+	assert.Equal(t, "new-loop-1", result.ID)
+	assert.Equal(t, kvstore.ReviewPhaseAwaitingReview, result.Phase)
+
+	store.AssertExpectations(t)
+	ghMock.AssertExpectations(t)
+}
+
+func TestEnsureReviewLoop_SkipsRunningAgent(t *testing.T) {
+	p, _, store, _ := setupReviewLoopTestPlugin(t)
+
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PrURL:         "https://github.com/org/repo/pull/42",
+		Status:        "RUNNING", // Not terminal.
+	}
+
+	// No existing loop.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(agent, nil)
+
+	result := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	assert.Nil(t, result)
+
+	// Should NOT have called startReviewLoop (SaveReviewLoop).
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestEnsureReviewLoop_DisabledConfig(t *testing.T) {
+	p, _, store, _ := setupReviewLoopTestPlugin(t)
+	p.configuration.EnableAIReviewLoop = false // Disabled.
+
+	// No existing loop.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+
+	result := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	assert.Nil(t, result)
+
+	// Should NOT have tried to look up an agent.
+	store.AssertNotCalled(t, "GetAgentByPRURL")
+}
+
+func TestEnsureReviewLoop_NoGitHubClient(t *testing.T) {
+	p, _, store, _ := setupReviewLoopTestPlugin(t)
+	p.githubClient = nil // No GitHub client.
+
+	// No existing loop.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+
+	result := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	assert.Nil(t, result)
+
+	// Should NOT have tried to look up an agent.
+	store.AssertNotCalled(t, "GetAgentByPRURL")
+}
+
+func TestEnsureReviewLoop_NoAgentFound(t *testing.T) {
+	p, _, store, _ := setupReviewLoopTestPlugin(t)
+
+	// No existing loop.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+
+	result := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	assert.Nil(t, result)
+
+	// Should NOT have called startReviewLoop.
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestEnsureReviewLoop_Idempotent(t *testing.T) {
+	p, _, store, _ := setupReviewLoopTestPlugin(t)
+
+	existingLoop := &kvstore.ReviewLoop{
+		ID:    "loop-1",
+		PRURL: "https://github.com/org/repo/pull/42",
+		Phase: kvstore.ReviewPhaseCursorFixing,
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(existingLoop, nil)
+
+	// Call twice -- should return the same loop both times without side effects.
+	result1 := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+	result2 := p.ensureReviewLoop("https://github.com/org/repo/pull/42")
+
+	assert.Equal(t, result1.ID, result2.ID)
+	store.AssertNotCalled(t, "GetAgentByPRURL")
+	store.AssertNotCalled(t, "SaveReviewLoop")
 }

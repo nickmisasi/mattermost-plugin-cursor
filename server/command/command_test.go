@@ -266,6 +266,14 @@ func (m *mockKVStore) GetReviewLoopByAgent(agentRecordID string) (*kvstore.Revie
 	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
 }
 
+func (m *mockKVStore) GetAllFinishedAgentsWithPR() ([]*kvstore.AgentRecord, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*kvstore.AgentRecord), args.Error(1)
+}
+
 type testEnv struct {
 	handler      Command
 	api          *plugintest.API

@@ -1,8 +1,12 @@
 package ghclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strconv"
 
@@ -27,11 +31,16 @@ type Client interface {
 	// This is required because Cursor creates PRs as drafts, and AI reviewers
 	// (e.g., CodeRabbit) skip draft PRs.
 	MarkPRReadyForReview(ctx context.Context, owner, repo string, prNumber int) error
+
+	// GetPullRequestByBranch finds an open PR with the given head branch.
+	// Returns nil, nil if no matching PR is found.
+	GetPullRequestByBranch(ctx context.Context, owner, repo, branch string) (*github.PullRequest, error)
 }
 
 // clientImpl implements Client by delegating to go-github.
 type clientImpl struct {
-	gh *github.Client
+	gh    *github.Client
+	token string // stored for raw GraphQL requests
 }
 
 // NewClient creates a new GitHub API client authenticated with the given PAT.
@@ -41,7 +50,8 @@ func NewClient(token string) Client {
 		return nil
 	}
 	return &clientImpl{
-		gh: github.NewClient(nil).WithAuthToken(token),
+		gh:    github.NewClient(nil).WithAuthToken(token),
+		token: token,
 	}
 }
 
@@ -81,9 +91,91 @@ func (c *clientImpl) ListReviews(ctx context.Context, owner, repo string, prNumb
 }
 
 func (c *clientImpl) MarkPRReadyForReview(ctx context.Context, owner, repo string, prNumber int) error {
+	// First check if the PR is actually a draft.
+	pr, _, err := c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR: %w", err)
+	}
+	if !pr.GetDraft() {
+		return nil // Already not a draft.
+	}
+
+	// Try REST API first (works with fine-grained PATs that have pull_requests:write).
 	draft := false
-	_, _, err := c.gh.PullRequests.Edit(ctx, owner, repo, prNumber, &github.PullRequest{Draft: &draft})
-	return err
+	_, _, restErr := c.gh.PullRequests.Edit(ctx, owner, repo, prNumber, &github.PullRequest{Draft: &draft})
+	if restErr == nil {
+		// Verify it actually changed.
+		updated, _, verifyErr := c.gh.PullRequests.Get(ctx, owner, repo, prNumber)
+		if verifyErr == nil && !updated.GetDraft() {
+			return nil // REST API worked.
+		}
+	}
+
+	// REST didn't work — fall back to GraphQL mutation.
+	nodeID := pr.GetNodeID()
+	if nodeID == "" {
+		return fmt.Errorf("PR %d has no node ID; REST also failed: %v", prNumber, restErr)
+	}
+
+	return c.graphqlMarkReady(ctx, nodeID)
+}
+
+// graphqlMarkReady calls the markPullRequestReadyForReview GraphQL mutation.
+func (c *clientImpl) graphqlMarkReady(ctx context.Context, pullRequestNodeID string) error {
+	query := `mutation($id: ID!) {
+		markPullRequestReadyForReview(input: {pullRequestId: $id}) {
+			pullRequest { isDraft }
+		}
+	}`
+
+	payload := map[string]any{
+		"query":     query,
+		"variables": map[string]string{"id": pullRequestNodeID},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal GraphQL request: %w", err)
+	}
+
+	graphqlURL := "https://api.github.com/graphql"
+	// Support custom base URLs (e.g. httptest servers in tests).
+	if base := c.gh.BaseURL.String(); base != "" && base != "https://api.github.com/" {
+		graphqlURL = base + "graphql"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, graphqlURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create GraphQL request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("GraphQL request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GraphQL returned HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Check for GraphQL-level errors.
+	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil // Response parsed fine, mutation likely succeeded.
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("GraphQL error: %s", result.Errors[0].Message)
+	}
+	return nil
 }
 
 func (c *clientImpl) ListReviewComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, error) {
@@ -103,6 +195,21 @@ func (c *clientImpl) ListReviewComments(ctx context.Context, owner, repo string,
 		opts.Page = resp.NextPage
 	}
 	return all, nil
+}
+
+func (c *clientImpl) GetPullRequestByBranch(ctx context.Context, owner, repo, branch string) (*github.PullRequest, error) {
+	prs, _, err := c.gh.PullRequests.List(ctx, owner, repo, &github.PullRequestListOptions{
+		Head:        owner + ":" + branch,
+		State:       "open",
+		ListOptions: github.ListOptions{PerPage: 1},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(prs) == 0 {
+		return nil, nil
+	}
+	return prs[0], nil
 }
 
 // --- PR URL Parser ---

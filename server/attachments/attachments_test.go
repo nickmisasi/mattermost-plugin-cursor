@@ -127,7 +127,7 @@ func TestBuildRunningAttachment(t *testing.T) {
 func TestBuildFinishedAttachment(t *testing.T) {
 	t.Run("with PR URL", func(t *testing.T) {
 		prURL := "https://github.com/org/repo/pull/42"
-		att := BuildFinishedAttachment("a1", "org/repo", "main", "claude-sonnet", "Fixed the bug", prURL)
+		att := BuildFinishedAttachment("a1", "org/repo", "main", "claude-sonnet", "Fixed the bug", prURL, "cursor/fix-login")
 
 		assert.Equal(t, ColorGreen, att.Color)
 		assert.Equal(t, "Agent finished!", att.Title)
@@ -142,14 +142,19 @@ func TestBuildFinishedAttachment(t *testing.T) {
 		assert.Contains(t, att.Text, "[View PR](https://github.com/org/repo/pull/42)")
 		assert.Contains(t, att.Text, "[Open in Cursor](https://cursor.com/agents/a1)")
 		assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
+		// When PR URL is present, no "No pull request" note should appear.
+		assert.NotContains(t, att.Text, "No pull request")
 	})
 
-	t.Run("without PR URL", func(t *testing.T) {
-		att := BuildFinishedAttachment("a1", "org/repo", "main", "", "Done", "")
+	t.Run("without PR URL but with target branch", func(t *testing.T) {
+		att := BuildFinishedAttachment("a1", "org/repo", "main", "", "Done", "", "cursor/fix-login")
 
 		assert.Equal(t, ColorGreen, att.Color)
 		assert.Equal(t, "Agent finished!", att.Title)
 		assert.Contains(t, att.Text, "Done")
+		assert.Contains(t, att.Text, "No pull request was created.")
+		assert.Contains(t, att.Text, "`cursor/fix-login`")
+		assert.Contains(t, att.Text, "create a PR manually")
 		require.Len(t, att.Fields, 2) // Repo and Branch, no Model
 		assert.Empty(t, att.Actions)
 		assert.Empty(t, att.Footer)
@@ -158,10 +163,19 @@ func TestBuildFinishedAttachment(t *testing.T) {
 		assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
 	})
 
+	t.Run("without PR URL and without target branch", func(t *testing.T) {
+		att := BuildFinishedAttachment("a1", "org/repo", "main", "", "Done", "", "")
+
+		assert.Contains(t, att.Text, "No pull request was created.")
+		assert.NotContains(t, att.Text, "branch")
+		assert.NotContains(t, att.Text, "View PR")
+	})
+
 	t.Run("empty summary", func(t *testing.T) {
-		att := BuildFinishedAttachment("a1", "", "", "", "", "")
+		att := BuildFinishedAttachment("a1", "", "", "", "", "", "")
 
 		assert.Contains(t, att.Text, "[Open in Cursor]")
+		assert.Contains(t, att.Text, "No pull request was created.")
 		assert.Empty(t, att.Fields)
 		assert.Empty(t, att.Actions)
 		assert.Empty(t, att.Footer)

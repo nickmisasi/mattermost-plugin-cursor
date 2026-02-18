@@ -55,6 +55,7 @@ func TestSaveAndGetAgent(t *testing.T) {
 	mockKVSet(api, prefixAgent+"agent-123", mustJSON(t, record))
 	mockKVSet(api, prefixAgentIdx+"agent-123", mustJSON(t, "agent-123"))
 	mockKVSet(api, prefixUserAgentIdx+"user-1:agent-123", mustJSON(t, "agent-123"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-123") // Active status, no PrURL -> delete index
 
 	err := s.SaveAgent(record)
 	require.NoError(t, err)
@@ -81,6 +82,7 @@ func TestSaveAgentCreatingStatus(t *testing.T) {
 
 	mockKVSet(api, prefixAgent+"agent-new", mustJSON(t, record))
 	mockKVSet(api, prefixAgentIdx+"agent-new", mustJSON(t, "agent-new"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-new") // Active status -> delete index
 
 	err := s.SaveAgent(record)
 	require.NoError(t, err)
@@ -99,6 +101,7 @@ func TestSaveAgentTerminalStatusRemovesIndex(t *testing.T) {
 
 			mockKVSet(api, prefixAgent+"agent-terminal", mustJSON(t, record))
 			mockKVDelete(api, prefixAgentIdx+"agent-terminal")
+			mockKVDelete(api, prefixFinishedWithPR+"agent-terminal") // No PrURL -> delete index
 
 			err := s.SaveAgent(record)
 			require.NoError(t, err)
@@ -114,6 +117,7 @@ func TestDeleteAgent(t *testing.T) {
 	api.On("KVGet", prefixAgent+"agent-del").Return([]byte(nil), nil)
 	mockKVDelete(api, prefixAgent+"agent-del")
 	mockKVDelete(api, prefixAgentIdx+"agent-del")
+	mockKVDelete(api, prefixFinishedWithPR+"agent-del")
 
 	err := s.DeleteAgent("agent-del")
 	require.NoError(t, err)
@@ -132,6 +136,7 @@ func TestDeleteAgentWithUserIndex(t *testing.T) {
 	api.On("KVGet", prefixAgent+"agent-del-user").Return(mustJSON(t, record), nil)
 	mockKVDelete(api, prefixAgent+"agent-del-user")
 	mockKVDelete(api, prefixAgentIdx+"agent-del-user")
+	mockKVDelete(api, prefixFinishedWithPR+"agent-del-user")
 	mockKVDelete(api, prefixUserAgentIdx+"user-1:agent-del-user")
 
 	err := s.DeleteAgent("agent-del-user")
@@ -534,6 +539,7 @@ func TestSaveAndGetReviewLoop(t *testing.T) {
 	mockKVSet(api, prefixReviewLoop+"rl-123", mustJSON(t, loop))
 	mockKVSet(api, prefixRLByPR+"https://github.com/org/repo/pull/42", mustJSON(t, "rl-123"))
 	mockKVSet(api, prefixRLByAgent+"agent-456", mustJSON(t, "rl-123"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-456") // Clear janitor index on loop creation
 
 	err := s.SaveReviewLoop(loop)
 	require.NoError(t, err)
@@ -702,6 +708,7 @@ func TestReviewLoopWithHistory(t *testing.T) {
 	mockKVSet(api, prefixReviewLoop+"rl-hist", mustJSON(t, loop))
 	mockKVSet(api, prefixRLByPR+"https://github.com/org/repo/pull/10", mustJSON(t, "rl-hist"))
 	mockKVSet(api, prefixRLByAgent+"agent-hist", mustJSON(t, "rl-hist"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-hist") // Clear janitor index on loop creation
 
 	err := s.SaveReviewLoop(loop)
 	require.NoError(t, err)

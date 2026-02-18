@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
@@ -26,6 +28,7 @@ const (
 	eventPing              = "ping"
 
 	prActionClosed      = "closed"
+	prActionOpened      = "opened"
 	prActionSynchronize = "synchronize"
 
 	reviewActionSubmitted = "submitted"
@@ -225,14 +228,17 @@ func (p *Plugin) handlePullRequestEvent(w http.ResponseWriter, body []byte) {
 		return
 	}
 
-	// Handle synchronize action for review loop.
-	if event.Action == prActionSynchronize {
+	// Route by action.
+	switch event.Action {
+	case prActionSynchronize:
 		p.handlePRSynchronizeWebhook(event, w)
 		return
-	}
-
-	// Only handle PR closed (merged or closed-without-merge) for the rest.
-	if event.Action != prActionClosed {
+	case prActionOpened:
+		p.handlePROpened(event, w)
+		return
+	case prActionClosed:
+		// Fall through to existing closed handling below.
+	default:
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -310,6 +316,73 @@ func (p *Plugin) handlePRSynchronizeWebhook(event PullRequestEvent, w http.Respo
 	w.WriteHeader(http.StatusOK)
 }
 
+// handlePROpened handles a newly opened PR. This is the PRIMARY path for:
+// 1. Linking a PR to an agent (backfilling PrURL)
+// 2. Starting the AI review loop
+// 3. Posting a PR notification in the agent's thread
+func (p *Plugin) handlePROpened(event PullRequestEvent, w http.ResponseWriter) {
+	agent := p.findAgentForPR(event.PullRequest)
+	if agent == nil {
+		p.API.LogDebug("No agent found for opened PR", "pr_url", event.PullRequest.HTMLURL)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	prURL := event.PullRequest.HTMLURL
+	changed := false
+
+	// Step 1: Backfill PrURL if empty.
+	if agent.PrURL == "" {
+		agent.PrURL = prURL
+		changed = true
+	}
+
+	// Step 2: Backfill TargetBranch if empty.
+	if agent.TargetBranch == "" && event.PullRequest.Head.Ref != "" {
+		agent.TargetBranch = event.PullRequest.Head.Ref
+		changed = true
+	}
+
+	if changed {
+		agent.UpdatedAt = time.Now().UnixMilli()
+		if err := p.kvstore.SaveAgent(agent); err != nil {
+			p.API.LogError("Failed to backfill agent from PR opened webhook",
+				"error", err.Error(),
+				"agent_id", agent.CursorAgentID,
+				"pr_url", prURL,
+			)
+		}
+		// Publish WebSocket event so RHS updates immediately.
+		p.publishAgentStatusChange(agent)
+	}
+
+	// Step 3: Post PR notification in thread.
+	prTitle := fmt.Sprintf("PR #%d: %s", event.PullRequest.Number, event.PullRequest.Title)
+	prAttachment := &model.SlackAttachment{
+		Color:     "#2389D7", // blue
+		Title:     prTitle,
+		TitleLink: prURL,
+		Text:      fmt.Sprintf("Pull request opened on branch `%s`.", event.PullRequest.Head.Ref),
+	}
+	p.postThreadNotificationWithAttachment(agent, prAttachment)
+
+	// Step 4: Start review loop if agent is FINISHED and review loop is enabled.
+	// If agent is still RUNNING, the poller will handle it when it detects FINISHED.
+	if cursor.AgentStatus(agent.Status).IsTerminal() &&
+		p.getConfiguration().EnableAIReviewLoop &&
+		p.getGitHubClient() != nil {
+		if err := p.startReviewLoop(agent); err != nil {
+			p.API.LogError("Failed to start review loop from PR opened webhook",
+				"error", err.Error(),
+				"agent_id", agent.CursorAgentID,
+				"pr_url", prURL,
+			)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte) {
 	var event PullRequestReviewEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -327,13 +400,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 	// --- Review Loop: Check for human review completion ---
 	// If this is NOT an AI bot, check if the PR has an active review loop in human_review phase.
 	if !p.isAIReviewerBot(event.Review.User.Login) {
-		loop, loopErr := p.kvstore.GetReviewLoopByPRURL(event.PullRequest.HTMLURL)
-		if loopErr != nil {
-			p.API.LogError("Failed to look up review loop for human review",
-				"error", loopErr.Error(),
-				"pr_url", event.PullRequest.HTMLURL,
-			)
-		}
+		loop := p.ensureReviewLoop(event.PullRequest.HTMLURL)
 		if loop != nil && loop.Phase == kvstore.ReviewPhaseHumanReview &&
 			strings.EqualFold(event.Review.State, reviewStateApproved) {
 			if err := p.handleHumanReviewApproval(loop, event.Review.User.Login); err != nil {
@@ -348,13 +415,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 
 	// --- Review Loop: Check if this is an AI reviewer bot ---
 	if p.isAIReviewerBot(event.Review.User.Login) {
-		loop, loopErr := p.kvstore.GetReviewLoopByPRURL(event.PullRequest.HTMLURL)
-		if loopErr != nil {
-			p.API.LogError("Failed to look up review loop for AI review",
-				"error", loopErr.Error(),
-				"pr_url", event.PullRequest.HTMLURL,
-			)
-		}
+		loop := p.ensureReviewLoop(event.PullRequest.HTMLURL)
 		if loop != nil && loop.Phase == kvstore.ReviewPhaseAwaitingReview {
 			if err := p.handleAIReview(loop, event.Review, event.PullRequest); err != nil {
 				p.API.LogError("Failed to handle AI review",
@@ -365,7 +426,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		// If no active review loop, fall through to normal handling.
+		// If loop exists but not in awaiting_review phase, fall through to notification.
 	}
 
 	// --- Existing: Look up the agent and post notification ---
@@ -374,6 +435,14 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 		p.API.LogDebug("No agent found for reviewed PR", "pr_url", event.PullRequest.HTMLURL)
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+
+	// Backfill PrURL if empty (agent may have finished before PR was linked).
+	if agent.PrURL == "" && event.PullRequest.HTMLURL != "" {
+		agent.PrURL = event.PullRequest.HTMLURL
+		agent.UpdatedAt = time.Now().UnixMilli()
+		_ = p.kvstore.SaveAgent(agent)
+		p.publishAgentStatusChange(agent)
 	}
 
 	reviewer := event.Review.User.Login

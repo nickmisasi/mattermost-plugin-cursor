@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -311,6 +313,37 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// GitHub freshness check: if PrURL is still empty but we have a TargetBranch,
+	// query GitHub for a matching PR and backfill.
+	if record.PrURL == "" && record.TargetBranch != "" {
+		ghClient := p.getGitHubClient()
+		if ghClient != nil {
+			parts := strings.SplitN(record.Repository, "/", 2)
+			if len(parts) == 2 {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel2()
+				pr, ghErr := ghClient.GetPullRequestByBranch(ctx2, parts[0], parts[1], record.TargetBranch)
+				if ghErr == nil && pr != nil {
+					record.PrURL = pr.GetHTMLURL()
+					record.UpdatedAt = time.Now().UnixMilli()
+					_ = p.kvstore.SaveAgent(record)
+
+					// Bootstrap a review loop if applicable.
+					if cursor.AgentStatus(record.Status).IsTerminal() &&
+						p.getConfiguration().EnableAIReviewLoop {
+						_ = p.ensureReviewLoop(record.PrURL)
+					}
+				}
+			}
+		}
+	}
+
+	// If ?fresh=true, force review loop check even if PrURL exists.
+	wantFresh := r.URL.Query().Get("fresh") == "true"
+	if wantFresh && record.PrURL != "" && p.getGitHubClient() != nil {
+		_ = p.ensureReviewLoop(record.PrURL)
+	}
+
 	resp := AgentResponse{
 		ID:          record.CursorAgentID,
 		Status:      record.Status,
@@ -514,9 +547,16 @@ func (p *Plugin) handleArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
-			p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
-			http.Error(w, "Failed to stop agent", http.StatusInternalServerError)
-			return
+			// 409 Conflict (already deleted) or 400 (no longer running/available) mean
+			// the agent is already gone in Cursor Cloud -- safe to proceed with local archive.
+			var cursorErr *cursor.APIError
+			if errors.As(apiErr, &cursorErr) && (cursorErr.StatusCode == http.StatusConflict || cursorErr.StatusCode == http.StatusBadRequest) {
+				p.API.LogWarn("Agent already stopped/deleted in Cursor Cloud, proceeding with archive", "agentID", agentID)
+			} else {
+				p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
+				http.Error(w, "Failed to stop agent", http.StatusInternalServerError)
+				return
+			}
 		}
 		record.Status = string(cursor.AgentStatusStopped)
 	}

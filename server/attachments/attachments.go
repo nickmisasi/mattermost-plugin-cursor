@@ -103,21 +103,31 @@ func BuildRunningAttachment(agentID, repo, branch, modelName string) *model.Slac
 
 // BuildFinishedAttachment creates an attachment for a successfully finished agent.
 // If prURL is non-empty, a "View PR" link is prepended to the links line.
-func BuildFinishedAttachment(agentID, repo, branch, modelName, summary, prURL string) *model.SlackAttachment {
+// If prURL is empty but targetBranch is non-empty, a note about the missing PR is shown
+// with the branch name so users can create a PR manually.
+func BuildFinishedAttachment(agentID, repo, branch, modelName, summary, prURL, targetBranch string) *model.SlackAttachment {
 	links := agentLinks(agentID)
 	if prURL != "" {
 		links = fmt.Sprintf("[View PR](%s) | %s", prURL, links)
 	}
 
-	text := links
+	var textParts []string
 	if summary != "" {
-		text = summary + "\n\n" + links
+		textParts = append(textParts, summary)
 	}
+	if prURL == "" {
+		noPRNote := "No pull request was created."
+		if targetBranch != "" {
+			noPRNote += fmt.Sprintf(" The agent's changes are on branch `%s` -- you can create a PR manually.", targetBranch)
+		}
+		textParts = append(textParts, noPRNote)
+	}
+	textParts = append(textParts, links)
 
 	return &model.SlackAttachment{
 		Color:  ColorGreen,
 		Title:  "Agent finished!",
-		Text:   text,
+		Text:   strings.Join(textParts, "\n\n"),
 		Fields: metadataFields(repo, branch, modelName),
 	}
 }

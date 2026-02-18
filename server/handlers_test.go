@@ -278,6 +278,14 @@ func (m *mockKVStore) GetReviewLoopByAgent(agentRecordID string) (*kvstore.Revie
 	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
 }
 
+func (m *mockKVStore) GetAllFinishedAgentsWithPR() ([]*kvstore.AgentRecord, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*kvstore.AgentRecord), args.Error(1)
+}
+
 // setupTestPlugin creates a Plugin with mocked dependencies for handler testing.
 func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient, *mockKVStore) {
 	t.Helper()
@@ -312,9 +320,9 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        "true",
-		EnableContextReview: "false", // Default to false so existing tests pass unchanged.
-		EnablePlanLoop:      "false",
+		AutoCreatePR:        true,
+		EnableContextReview: false, // Default to false so existing tests pass unchanged.
+		EnablePlanLoop:      false,
 	}
 
 	return p, api, cursorClient, store
@@ -528,6 +536,31 @@ func TestMessageHasBeenPosted_APIError_AddsX(t *testing.T) {
 
 	cursorClient.AssertExpectations(t)
 	api.AssertExpectations(t)
+}
+
+func TestFormatAPIError_BranchNotFound_AppendsTip(t *testing.T) {
+	// When the error contains "does not exist in repository", the message should
+	// include a tip about using the branch= override.
+	err := &cursor.APIError{
+		StatusCode: 400,
+		Message:    "Branch 'cursor-env' does not exist in repository nickmisasi/mattermost-plugin-cursor.",
+		RawBody:    `{"message":"Branch 'cursor-env' does not exist in repository nickmisasi/mattermost-plugin-cursor."}`,
+	}
+	result := formatAPIError("Failed to launch agent", err)
+	assert.Contains(t, result, "does not exist in repository")
+	assert.Contains(t, result, "Tip:")
+	assert.Contains(t, result, "branch=main")
+}
+
+func TestFormatAPIError_OtherError_NoTip(t *testing.T) {
+	// A generic error should not include the branch tip.
+	err := &cursor.APIError{
+		StatusCode: 500,
+		Message:    "Internal server error",
+	}
+	result := formatAPIError("Failed to launch agent", err)
+	assert.NotContains(t, result, "Tip:")
+	assert.NotContains(t, result, "branch=main")
 }
 
 func TestMessageHasBeenPosted_FollowUp_RunningAgent(t *testing.T) {
@@ -1117,9 +1150,9 @@ func TestMessageHasBeenPosted_ContextReviewEnabled_PostsReviewInsteadOfLaunching
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        "true",
-		EnableContextReview: "true", // HITL enabled.
-		EnablePlanLoop:      "false",
+		AutoCreatePR:        true,
+		EnableContextReview: true, // HITL enabled.
+		EnablePlanLoop:      false,
 	}
 
 	siteURL := "http://localhost:8065"
@@ -1210,9 +1243,9 @@ func TestMessageHasBeenPosted_DirectFlag_SkipsBothHITL(t *testing.T) {
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        "true",
-		EnableContextReview: "true",
-		EnablePlanLoop:      "true",
+		AutoCreatePR:        true,
+		EnableContextReview: true,
+		EnablePlanLoop:      true,
 	}
 
 	post := &model.Post{
@@ -1249,9 +1282,9 @@ func TestMessageHasBeenPosted_NoReviewFlag_SkipsContextReviewOnly(t *testing.T) 
 		DefaultRepository:   "org/default-repo",
 		DefaultBranch:       "main",
 		DefaultModel:        "auto",
-		AutoCreatePR:        "true",
-		EnableContextReview: "true",
-		EnablePlanLoop:      "false",
+		AutoCreatePR:        true,
+		EnableContextReview: true,
+		EnablePlanLoop:      false,
 	}
 
 	post := &model.Post{

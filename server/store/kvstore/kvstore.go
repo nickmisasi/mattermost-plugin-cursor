@@ -206,4 +206,7 @@ type KVStore interface {
 	// ReviewLoop lookups
 	GetReviewLoopByPRURL(prURL string) (*ReviewLoop, error)
 	GetReviewLoopByAgent(agentRecordID string) (*ReviewLoop, error)
+
+	// Janitor indexes
+	GetAllFinishedAgentsWithPR() ([]*AgentRecord, error)
 }

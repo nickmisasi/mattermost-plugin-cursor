@@ -27,8 +27,8 @@ func (p *Plugin) resolveHITLFlags(parsed *parser.ParsedMention, userID string) (
 	config := p.getConfiguration()
 
 	// Start with global config defaults (inverted: config says "Enable", we need "Skip").
-	skipReview = !boolFromStr(config.EnableContextReview)
-	skipPlan = !boolFromStr(config.EnablePlanLoop)
+	skipReview = !config.EnableContextReview
+	skipPlan = !config.EnablePlanLoop
 
 	// Override with user settings (if set, non-nil).
 	userSettings, _ := p.kvstore.GetUserSettings(userID)
