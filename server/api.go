@@ -19,6 +19,8 @@ import (
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 	router.Use(p.trackAPIRequestCounts)
+	router.NotFoundHandler = http.HandlerFunc(p.trackNotFoundRequest)
+	router.MethodNotAllowedHandler = http.HandlerFunc(p.trackMethodNotAllowedRequest)
 
 	// GitHub webhook endpoint -- NO auth middleware (uses HMAC signature verification).
 	router.HandleFunc("/api/v1/webhooks/github", p.handleGitHubWebhook).Methods(http.MethodPost)
