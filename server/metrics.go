@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"sync"
 )
 
@@ -12,6 +14,17 @@ var (
 
 	// apiRequestCountsLock protects apiRequestCounts across concurrent requests.
 	apiRequestCountsLock sync.RWMutex
+
+	apiPathNormalizers = []struct {
+		pattern     *regexp.Regexp
+		replacement string
+	}{
+		{pattern: regexp.MustCompile(`^/api/v1/agents/[^/]+/followup$`), replacement: "/api/v1/agents/{id}/followup"},
+		{pattern: regexp.MustCompile(`^/api/v1/agents/[^/]+/archive$`), replacement: "/api/v1/agents/{id}/archive"},
+		{pattern: regexp.MustCompile(`^/api/v1/agents/[^/]+/unarchive$`), replacement: "/api/v1/agents/{id}/unarchive"},
+		{pattern: regexp.MustCompile(`^/api/v1/agents/[^/]+$`), replacement: "/api/v1/agents/{id}"},
+		{pattern: regexp.MustCompile(`^/api/v1/workflows/[^/]+$`), replacement: "/api/v1/workflows/{id}"},
+	}
 )
 
 func recordAPIRequest(endpoint string) {
@@ -26,8 +39,19 @@ func endpointKey(r *http.Request) string {
 	if path == "" {
 		path = "/"
 	}
+	path = normalizeAPIPath(path)
 
 	return r.Method + " " + path
+}
+
+func normalizeAPIPath(path string) string {
+	for _, normalizer := range apiPathNormalizers {
+		if normalizer.pattern.MatchString(path) {
+			return normalizer.replacement
+		}
+	}
+
+	return path
 }
 
 func getAPIRequestCountsSnapshot() map[string]int {
@@ -58,8 +82,15 @@ func (p *Plugin) handleGetMetrics(w http.ResponseWriter, _ *http.Request) {
 		APIRequestCounts: getAPIRequestCountsSnapshot(),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
+	var payload bytes.Buffer
+	if err := json.NewEncoder(&payload).Encode(response); err != nil {
 		p.API.LogError("Failed to encode metrics response", "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(payload.Bytes()); err != nil {
+		p.API.LogError("Failed to write metrics response", "error", err.Error())
 	}
 }
