@@ -17,6 +17,12 @@ import (
 
 // initRouter initializes the HTTP router for the plugin.
 func (p *Plugin) initRouter() *mux.Router {
+	p.apiRequestCountsByEndpointMu.Lock()
+	if p.apiRequestCountsByEndpoint == nil {
+		p.apiRequestCountsByEndpoint = make(map[string]int)
+	}
+	p.apiRequestCountsByEndpointMu.Unlock()
+
 	router := mux.NewRouter()
 	router.Use(p.trackAPIRequestCounts)
 
@@ -48,6 +54,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	adminRouter := authedRouter.PathPrefix("/admin").Subrouter()
 	adminRouter.Use(p.RequireSystemAdmin)
 	adminRouter.HandleFunc("/health", p.handleHealthCheck).Methods(http.MethodGet)
+	adminRouter.HandleFunc("/metrics", p.handleGetAPIMetrics).Methods(http.MethodGet)
 
 	return router
 }
@@ -95,6 +102,11 @@ type HealthResponse struct {
 type HealthStatus struct {
 	OK      bool   `json:"ok"`
 	Message string `json:"message,omitempty"`
+}
+
+// APIMetricsResponse is the JSON response from the metrics endpoint.
+type APIMetricsResponse struct {
+	RequestCountsByEndpoint map[string]int `json:"request_counts_by_endpoint"`
 }
 
 func (p *Plugin) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +164,17 @@ func (p *Plugin) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		p.API.LogError("Failed to encode health response", "error", err.Error())
+	}
+}
+
+func (p *Plugin) handleGetAPIMetrics(w http.ResponseWriter, _ *http.Request) {
+	response := APIMetricsResponse{
+		RequestCountsByEndpoint: p.getAPIRequestCountsByEndpoint(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		p.API.LogError("Failed to encode API metrics response", "error", err.Error())
 	}
 }
 

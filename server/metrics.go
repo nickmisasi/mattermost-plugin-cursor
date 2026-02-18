@@ -9,6 +9,18 @@ import (
 
 const unmatchedEndpoint = "UNMATCHED"
 
+func (p *Plugin) getAPIRequestCountsByEndpoint() map[string]int {
+	p.apiRequestCountsByEndpointMu.Lock()
+	defer p.apiRequestCountsByEndpointMu.Unlock()
+
+	snapshot := make(map[string]int, len(p.apiRequestCountsByEndpoint))
+	for key, count := range p.apiRequestCountsByEndpoint {
+		snapshot[key] = count
+	}
+
+	return snapshot
+}
+
 func apiRequestEndpointKey(r *http.Request) string {
 	path := unmatchedEndpoint
 	if route := mux.CurrentRoute(r); route != nil {
@@ -25,9 +37,6 @@ func (p *Plugin) trackAPIRequestCounts(next http.Handler) http.Handler {
 		endpoint := apiRequestEndpointKey(r)
 
 		p.apiRequestCountsByEndpointMu.Lock()
-		if p.apiRequestCountsByEndpoint == nil {
-			p.apiRequestCountsByEndpoint = make(map[string]int)
-		}
 		p.apiRequestCountsByEndpoint[endpoint]++
 		p.apiRequestCountsByEndpointMu.Unlock()
 
