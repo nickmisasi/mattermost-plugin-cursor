@@ -17,6 +17,8 @@ import (
 
 // initRouter initializes the HTTP router for the plugin.
 func (p *Plugin) initRouter() *mux.Router {
+	// OnActivate initializes this map, but some tests call initRouter directly
+	// on a zero-value Plugin, so keep this defensive initialization.
 	p.apiRequestCountsByEndpointMu.Lock()
 	if p.apiRequestCountsByEndpoint == nil {
 		p.apiRequestCountsByEndpoint = make(map[string]int)
