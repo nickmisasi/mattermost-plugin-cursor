@@ -3,18 +3,31 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
 )
 
-var apiRequestCountsByEndpoint = map[string]int{}
+const unmatchedEndpoint = "UNMATCHED"
+
+var (
+	apiRequestCountsByEndpoint   = map[string]int{}
+	apiRequestCountsByEndpointMu sync.Mutex
+)
 
 func getAPIRequestCountsByEndpoint() map[string]int {
-	return apiRequestCountsByEndpoint
+	apiRequestCountsByEndpointMu.Lock()
+	defer apiRequestCountsByEndpointMu.Unlock()
+
+	snapshot := make(map[string]int, len(apiRequestCountsByEndpoint))
+	for key, count := range apiRequestCountsByEndpoint {
+		snapshot[key] = count
+	}
+	return snapshot
 }
 
 func apiRequestEndpointKey(r *http.Request) string {
-	path := r.URL.Path
+	path := unmatchedEndpoint
 	if route := mux.CurrentRoute(r); route != nil {
 		if template, err := route.GetPathTemplate(); err == nil && template != "" {
 			path = template
@@ -27,7 +40,10 @@ func apiRequestEndpointKey(r *http.Request) string {
 func (p *Plugin) trackAPIRequestCounts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		endpoint := apiRequestEndpointKey(r)
+
+		apiRequestCountsByEndpointMu.Lock()
 		apiRequestCountsByEndpoint[endpoint]++
+		apiRequestCountsByEndpointMu.Unlock()
 
 		next.ServeHTTP(w, r)
 	})
