@@ -48,6 +48,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	adminRouter := authedRouter.PathPrefix("/admin").Subrouter()
 	adminRouter.Use(p.RequireSystemAdmin)
 	adminRouter.HandleFunc("/health", p.handleHealthCheck).Methods(http.MethodGet)
+	adminRouter.HandleFunc("/metrics", p.handleGetMetrics).Methods(http.MethodGet)
 
 	return router
 }
