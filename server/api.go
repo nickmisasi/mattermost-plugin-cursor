@@ -18,6 +18,7 @@ import (
 // initRouter initializes the HTTP router for the plugin.
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
+	router.Use(p.trackAPIRequestMetrics)
 
 	// GitHub webhook endpoint -- NO auth middleware (uses HMAC signature verification).
 	router.HandleFunc("/api/v1/webhooks/github", p.handleGitHubWebhook).Methods(http.MethodPost)
