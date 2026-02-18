@@ -51,6 +51,12 @@ type Plugin struct {
 	// router is the HTTP router for handling API requests.
 	router *mux.Router
 
+	// apiRequestCountsByEndpoint tracks API request totals by endpoint key.
+	apiRequestCountsByEndpoint map[string]int
+
+	// apiRequestCountsByEndpointMu synchronizes access to apiRequestCountsByEndpoint.
+	apiRequestCountsByEndpointMu sync.Mutex
+
 	// configurationLock synchronizes access to the configuration, cursorClient, and botUserID.
 	configurationLock sync.RWMutex
 
@@ -149,6 +155,9 @@ func (p *Plugin) OnActivate() error {
 
 	// Initialize the bridge client for LLM-based prompt enrichment.
 	p.bridgeClient = bridgeclient.NewClient(p.API)
+
+	// Initialize API endpoint request metrics state.
+	p.apiRequestCountsByEndpoint = make(map[string]int)
 
 	// Initialize the Cursor API client (may be nil if API key not configured yet).
 	cfg := p.getConfiguration()
