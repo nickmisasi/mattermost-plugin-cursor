@@ -19,6 +19,9 @@ import (
 func (p *Plugin) initRouter() *mux.Router {
 	router := mux.NewRouter()
 
+	// Simple unauthenticated health endpoint for liveness/readiness checks.
+	router.HandleFunc("/healthz", p.handleHealthz).Methods(http.MethodGet)
+
 	// GitHub webhook endpoint -- NO auth middleware (uses HMAC signature verification).
 	router.HandleFunc("/api/v1/webhooks/github", p.handleGitHubWebhook).Methods(http.MethodPost)
 
