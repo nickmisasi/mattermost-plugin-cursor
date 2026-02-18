@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
-
-	"github.com/gorilla/mux"
 )
 
 var (
@@ -24,13 +22,6 @@ func recordAPIRequest(endpoint string) {
 }
 
 func endpointKey(r *http.Request) string {
-	route := mux.CurrentRoute(r)
-	if route != nil {
-		if template, err := route.GetPathTemplate(); err == nil {
-			return r.Method + " " + template
-		}
-	}
-
 	path := r.URL.Path
 	if path == "" {
 		path = "/"
