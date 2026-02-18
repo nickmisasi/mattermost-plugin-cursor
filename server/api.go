@@ -25,6 +25,7 @@ func (p *Plugin) initRouter() *mux.Router {
 	// All other API routes require a logged-in Mattermost user.
 	authedRouter := router.PathPrefix("/api/v1").Subrouter()
 	authedRouter.Use(p.MattermostAuthorizationRequired)
+	authedRouter.Use(newRateLimitMiddleware(newInMemoryRateLimiter(rateLimitMaxRequests, rateLimitWindow, nil)))
 
 	// Dialog submission endpoint for /cursor settings.
 	authedRouter.HandleFunc("/dialog/settings", p.handleSettingsDialogSubmission).Methods(http.MethodPost)
