@@ -21,7 +21,6 @@ func (p *Plugin) trackAPIRequestCounts(next http.Handler) http.Handler {
 
 		key := fmt.Sprintf("%s %s", r.Method, endpoint)
 		apiRequestCounts[key]++
-
 		next.ServeHTTP(w, r)
 	})
 }
