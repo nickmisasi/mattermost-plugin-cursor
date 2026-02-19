@@ -421,8 +421,6 @@ func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 
 // cleanupStaleAgents marks agents stuck in CREATING or RUNNING state for longer
 // than maxAge as STOPPED and notifies users via thread messages.
-//
-//nolint:unused // Called from scheduled maintenance, not from the main poll loop.
 func (p *Plugin) cleanupStaleAgents(agents []*kvstore.AgentRecord, maxAge time.Duration) int {
 	cleaned := 0
 	now := time.Now()
