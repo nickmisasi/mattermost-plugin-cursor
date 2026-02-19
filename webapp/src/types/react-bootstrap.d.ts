@@ -5,6 +5,7 @@ declare module 'react-bootstrap' {
         show?: boolean;
         onHide?: () => void;
         onExited?: () => void;
+        centered?: boolean;
         children?: ReactNode;
         className?: string;
     }

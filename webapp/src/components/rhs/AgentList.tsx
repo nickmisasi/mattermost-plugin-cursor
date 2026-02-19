@@ -172,6 +172,11 @@ const AgentList: React.FC<Props> = ({agents, isLoading, onSelectAgent, showArchi
                         'Archive' :
                         'Unarchive'
                 }
+                confirmClassName={
+                    confirmModal?.action === 'archive' ?
+                        'btn-danger' :
+                        'btn-primary'
+                }
                 onConfirm={handleConfirmModalConfirm}
                 onCancel={handleConfirmModalCancel}
             />

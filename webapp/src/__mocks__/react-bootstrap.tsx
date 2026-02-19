@@ -4,6 +4,7 @@ import React from 'react';
 export const Modal = ({show, children, className}: {
     show: boolean;
     onHide: () => void;
+    centered?: boolean;
     children: React.ReactNode;
     className?: string;
 }) => (show ? (

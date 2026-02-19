@@ -32,6 +32,7 @@ const ConfirmModal: React.FC<Props> = ({
             show={show}
             onHide={onCancel}
             onExited={onExited}
+            centered={true}
             className='cursor-confirm-modal'
         >
             <ModalHeader closeButton={false}>

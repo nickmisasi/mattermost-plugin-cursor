@@ -260,6 +260,7 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 		// Look up workflow association for HITL-aware agents.
 		if wfID, wfErr := p.kvstore.GetWorkflowByAgent(a.CursorAgentID); wfErr == nil && wfID != "" {
 			if wf, wfGetErr := p.kvstore.GetWorkflow(wfID); wfGetErr == nil && wf != nil {
+				wf = p.reconcileRejectedImplementerWorkflowPhase(a, wf)
 				agentResp.WorkflowID = wf.ID
 				agentResp.WorkflowPhase = wf.Phase
 				agentResp.PlanIterationCount = wf.PlanIterationCount
@@ -295,9 +296,21 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var workflow *kvstore.HITLWorkflow
+	if wfID, wfErr := p.kvstore.GetWorkflowByAgent(record.CursorAgentID); wfErr == nil && wfID != "" {
+		if wf, wfGetErr := p.kvstore.GetWorkflow(wfID); wfGetErr == nil && wf != nil {
+			workflow = wf
+		}
+	}
+
 	// Optionally refresh status from Cursor API.
 	cursorClient := p.getCursorClient()
-	if cursorClient != nil && !cursor.AgentStatus(record.Status).IsTerminal() {
+	status := cursor.AgentStatus(record.Status)
+	shouldForceRefresh := workflow != nil &&
+		workflow.Phase == kvstore.PhaseRejected &&
+		workflow.ImplementerAgentID == record.CursorAgentID &&
+		status == cursor.AgentStatusFinished
+	if cursorClient != nil && (!status.IsTerminal() || shouldForceRefresh) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if remoteAgent, apiErr := cursorClient.GetAgent(ctx, agentID); apiErr == nil {
@@ -317,6 +330,8 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	workflow = p.reconcileRejectedImplementerWorkflowPhase(record, workflow)
 
 	// GitHub freshness check: if PrURL is still empty but we have a TargetBranch,
 	// query GitHub for a matching PR and backfill.
@@ -369,13 +384,11 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		Archived:     record.Archived,
 	}
 
-	// Look up workflow association.
-	if wfID, wfErr := p.kvstore.GetWorkflowByAgent(record.CursorAgentID); wfErr == nil && wfID != "" {
-		if wf, wfGetErr := p.kvstore.GetWorkflow(wfID); wfGetErr == nil && wf != nil {
-			resp.WorkflowID = wf.ID
-			resp.WorkflowPhase = wf.Phase
-			resp.PlanIterationCount = wf.PlanIterationCount
-		}
+	// Include workflow association when available.
+	if workflow != nil {
+		resp.WorkflowID = workflow.ID
+		resp.WorkflowPhase = workflow.Phase
+		resp.PlanIterationCount = workflow.PlanIterationCount
 	}
 
 	// Look up review loop association.
@@ -575,8 +588,9 @@ func (p *Plugin) handleArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Transition any associated HITL workflow to rejected.
-	p.rejectWorkflowForAgent(agentID)
+	// Note: We do NOT reject the workflow when archiving.
+	// Archive is a "hide from view" operation, not a rejection.
+	// The workflow can continue in the background and the agent can be unarchived later.
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(StatusOKResponse{Status: "ok"})
@@ -747,6 +761,55 @@ func (p *Plugin) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// reconcileRejectedImplementerWorkflowPhase repairs stale workflow phase values where an
+// implementer workflow was incorrectly marked rejected even though the implementer agent
+// is still creating/running or has already finished.
+func (p *Plugin) reconcileRejectedImplementerWorkflowPhase(
+	record *kvstore.AgentRecord,
+	workflow *kvstore.HITLWorkflow,
+) *kvstore.HITLWorkflow {
+	if record == nil || workflow == nil {
+		return workflow
+	}
+	if workflow.Phase != kvstore.PhaseRejected {
+		return workflow
+	}
+	if workflow.ImplementerAgentID == "" || workflow.ImplementerAgentID != record.CursorAgentID {
+		return workflow
+	}
+
+	var desiredPhase string
+	switch cursor.AgentStatus(record.Status) {
+	case cursor.AgentStatusCreating, cursor.AgentStatusRunning:
+		desiredPhase = kvstore.PhaseImplementing
+	case cursor.AgentStatusFinished:
+		desiredPhase = kvstore.PhaseComplete
+	default:
+		return workflow
+	}
+
+	if desiredPhase == workflow.Phase {
+		return workflow
+	}
+
+	updated := *workflow
+	updated.Phase = desiredPhase
+	updated.UpdatedAt = time.Now().UnixMilli()
+	if err := p.kvstore.SaveWorkflow(&updated); err != nil {
+		p.API.LogError("Failed to reconcile stale workflow phase",
+			"workflow_id", workflow.ID,
+			"agent_id", record.CursorAgentID,
+			"current_phase", workflow.Phase,
+			"desired_phase", desiredPhase,
+			"error", err.Error(),
+		)
+		return workflow
+	}
+
+	p.publishWorkflowPhaseChange(&updated)
+	return &updated
 }
 
 // handleHITLResponse processes PostAction button clicks for HITL Accept/Reject.
