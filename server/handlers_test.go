@@ -354,6 +354,21 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 	return p, api, cursorClient, store
 }
 
+func TestWrapPromptWithSystemInstructions_RepositoryScopedGuidance(t *testing.T) {
+	p, _, _, _ := setupTestPlugin(t)
+
+	scopedPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "mattermost/mattermost")
+	assert.Contains(t, scopedPrompt, "<system-instructions>")
+	assert.Contains(t, scopedPrompt, ".cursor/skills/browser-qa.md")
+	assert.Contains(t, scopedPrompt, "validate the fix when possible")
+
+	scopedURLPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "https://github.com/mattermost/mattermost")
+	assert.Contains(t, scopedURLPrompt, ".cursor/skills/browser-qa.md")
+
+	otherRepoPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "org/repo")
+	assert.NotContains(t, otherRepoPrompt, ".cursor/skills/browser-qa.md")
+}
+
 func TestMessageHasBeenPosted_IgnoresBotPosts(t *testing.T) {
 	p, _, cursorClient, store := setupTestPlugin(t)
 
@@ -1443,4 +1458,425 @@ func TestHandlePossibleFollowUp_AgentFollowUp_StillWorks(t *testing.T) {
 	p.handlePossibleFollowUp(post)
 
 	cursorClient.AssertCalled(t, "AddFollowup", mock.Anything, "agent-123", mock.Anything)
+}
+
+// --- Additional comprehensive tests ---
+
+func TestSendFollowUp_EmptyTextAfterMentionStrip(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:      "post-1",
+		Message: "@cursor",
+	}
+	agentRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+
+	p.sendFollowUp(post, agentRecord)
+
+	// Should not attempt to send follow-up if text is empty.
+	api.AssertNotCalled(t, "CreatePost")
+}
+
+func TestSendFollowUp_NoCursorClient(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+	p.cursorClient = nil
+
+	post := &model.Post{
+		Id:      "post-1",
+		Message: "fix this too",
+	}
+	agentRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil)
+
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "x"
+	})).Return(nil, nil)
+
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return strings.Contains(p.Message, "not configured")
+	})).Return(&model.Post{Id: "reply-1"}, nil)
+
+	p.sendFollowUp(post, agentRecord)
+
+	api.AssertExpectations(t)
+}
+
+func TestSendFollowUp_APIError(t *testing.T) {
+	p, api, cursorClient, _ := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:      "post-1",
+		Message: "fix this too",
+	}
+	agentRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	cursorClient.On("AddFollowup", mock.Anything, "agent-123", mock.Anything).Return(nil, &cursor.APIError{
+		StatusCode: 500,
+		Message:    "server error",
+	})
+
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return strings.Contains(p.Message, "Failed to send follow-up")
+	})).Return(&model.Post{Id: "reply-1"}, nil)
+
+	p.sendFollowUp(post, agentRecord)
+
+	api.AssertExpectations(t)
+	cursorClient.AssertExpectations(t)
+}
+
+func TestEnrichFromThread_MaxImageLimit(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:        "reply-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-1",
+		Message:   "@cursor fix this",
+	}
+
+	// Create a thread with 6 images (exceeds maxThreadImages = 5).
+	fileIds := make(model.StringArray, 6)
+	for i := 0; i < 6; i++ {
+		fileIds[i] = model.NewId()
+	}
+
+	api.On("GetPostThread", "root-1").Return(&model.PostList{
+		Order: []string{"root-1"},
+		Posts: map[string]*model.Post{
+			"root-1": {
+				Id:       "root-1",
+				UserId:   "user-1",
+				Message:  "Here are screenshots",
+				CreateAt: 1000,
+				FileIds:  fileIds,
+			},
+		},
+	}, nil)
+
+	for i := 0; i < 6; i++ {
+		api.On("GetFileInfo", fileIds[i]).Return(&model.FileInfo{
+			Id:       fileIds[i],
+			MimeType: "image/png",
+			Size:     100,
+		}, nil)
+		testPNG := createTestPNG(100, 50)
+		api.On("GetFile", fileIds[i]).Return(testPNG, nil)
+	}
+
+	result := p.enrichFromThread(post)
+	assert.NotNil(t, result)
+	assert.Len(t, result.Images, maxThreadImages, "should respect max image limit")
+}
+
+func TestEnrichFromThread_MaxImageSizeLimit(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:        "reply-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-1",
+		Message:   "@cursor fix this",
+	}
+
+	// Create large images that exceed maxThreadImageSize.
+	fileIds := make(model.StringArray, 3)
+	for i := 0; i < 3; i++ {
+		fileIds[i] = model.NewId()
+	}
+
+	api.On("GetPostThread", "root-1").Return(&model.PostList{
+		Order: []string{"root-1"},
+		Posts: map[string]*model.Post{
+			"root-1": {
+				Id:       "root-1",
+				UserId:   "user-1",
+				Message:  "Large images",
+				CreateAt: 1000,
+				FileIds:  fileIds,
+			},
+		},
+	}, nil)
+
+	// First image is under limit, second and third would exceed total size.
+	api.On("GetFileInfo", fileIds[0]).Return(&model.FileInfo{
+		Id:       fileIds[0],
+		MimeType: "image/png",
+		Size:     1000,
+	}, nil)
+	testPNG1 := createTestPNG(100, 50)
+	api.On("GetFile", fileIds[0]).Return(testPNG1, nil)
+
+	api.On("GetFileInfo", fileIds[1]).Return(&model.FileInfo{
+		Id:       fileIds[1],
+		MimeType: "image/png",
+		Size:     maxThreadImageSize, // Would exceed limit.
+	}, nil)
+
+	api.On("GetFileInfo", fileIds[2]).Return(&model.FileInfo{
+		Id:       fileIds[2],
+		MimeType: "image/png",
+		Size:     1000,
+	}, nil)
+
+	result := p.enrichFromThread(post)
+	assert.NotNil(t, result)
+	assert.LessOrEqual(t, len(result.Images), 1, "should skip images that would exceed size limit")
+}
+
+func TestResolveDefaults_ParsedAutoPRTrue(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	post := &model.Post{
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+	}
+
+	autoPR := true
+	parsed := &parser.ParsedMention{Prompt: "fix it", AutoPR: &autoPR}
+
+	_, _, _, autoCreatePR := p.resolveDefaults(post, parsed)
+	assert.True(t, autoCreatePR, "parsed AutoPR should override global default")
+}
+
+func TestResolveDefaults_ParsedAutoPRFalse(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+	p.configuration.AutoCreatePR = true
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	post := &model.Post{
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+	}
+
+	autoPR := false
+	parsed := &parser.ParsedMention{Prompt: "fix it", AutoPR: &autoPR}
+
+	_, _, _, autoCreatePR := p.resolveDefaults(post, parsed)
+	assert.False(t, autoCreatePR, "parsed AutoPR=false should override global default")
+}
+
+func TestGetSystemPrompt_UsesDefault(t *testing.T) {
+	p, _, _, _ := setupTestPlugin(t)
+	p.configuration.CursorAgentSystemPrompt = ""
+
+	prompt := p.getSystemPrompt()
+	assert.Equal(t, defaultSystemPrompt, prompt)
+}
+
+func TestGetSystemPrompt_UsesCustom(t *testing.T) {
+	p, _, _, _ := setupTestPlugin(t)
+	p.configuration.CursorAgentSystemPrompt = "Custom system prompt"
+
+	prompt := p.getSystemPrompt()
+	assert.Equal(t, "Custom system prompt", prompt)
+}
+
+func TestGetThreadAgentRecord_NoMapping(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+
+	store.On("GetAgentIDByThread", "root-1").Return("", nil)
+
+	record, err := p.getThreadAgentRecord("root-1")
+	assert.NoError(t, err)
+	assert.Nil(t, record)
+}
+
+func TestGetThreadAgentRecord_MappingButNoRecord(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+
+	store.On("GetAgentIDByThread", "root-1").Return("agent-123", nil)
+	store.On("GetAgent", "agent-123").Return(nil, nil)
+
+	record, err := p.getThreadAgentRecord("root-1")
+	assert.NoError(t, err)
+	assert.Nil(t, record)
+}
+
+func TestGetThreadAgentRecord_Success(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+
+	expectedRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	store.On("GetAgentIDByThread", "root-1").Return("agent-123", nil)
+	store.On("GetAgent", "agent-123").Return(expectedRecord, nil)
+
+	record, err := p.getThreadAgentRecord("root-1")
+	assert.NoError(t, err)
+	assert.Equal(t, expectedRecord, record)
+}
+
+func TestGetDisplayName_UserNotFound(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	api.On("GetUser", "user-999").Return(nil, model.NewAppError("test", "user not found", nil, "", 404))
+
+	displayName := p.getDisplayName("user-999")
+	assert.Equal(t, "unknown", displayName)
+}
+
+func TestGetDisplayName_PreferredNameSet(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	api.On("GetUser", "user-1").Return(&model.User{
+		Id:       "user-1",
+		Username: "jdoe",
+		Nickname: "Johnny",
+	}, nil)
+
+	displayName := p.getDisplayName("user-1")
+	assert.NotEmpty(t, displayName)
+}
+
+func TestMessageHasBeenPosted_ShouldNotProcessSystemMessage(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+
+	post := &model.Post{
+		UserId:    "user-1",
+		Type:      model.PostTypeJoinChannel,
+		ChannelId: "ch-1",
+		Message:   "@cursor fix something",
+	}
+
+	// ShouldProcessMessage should return false for system messages.
+	// The pluginapi.Post.ShouldProcessMessage will check the post type.
+	api.On("GetSystemInstallDate").Return(int64(1000), nil).Maybe()
+
+	p.MessageHasBeenPosted(nil, post)
+
+	// No agent launch should occur.
+	cursorClient.AssertNotCalled(t, "LaunchAgent")
+	store.AssertNotCalled(t, "SaveAgent")
+}
+
+func TestHandlePossibleFollowUp_NoRootId_DoesNothing(t *testing.T) {
+	p, _, cursorClient, store := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "", // Not a thread reply.
+		Message:   "some message",
+	}
+
+	p.handlePossibleFollowUp(post)
+
+	// No workflow or agent lookups should occur.
+	store.AssertNotCalled(t, "GetWorkflowByThread")
+	store.AssertNotCalled(t, "GetAgentIDByThread")
+	cursorClient.AssertNotCalled(t, "AddFollowup")
+}
+
+func TestLaunchNewAgent_NoCursorClient(t *testing.T) {
+	p, api, _, store := setupTestPlugin(t)
+	p.cursorClient = nil
+
+	post := &model.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		Message:   "@cursor fix the bug",
+	}
+	parsed := &parser.ParsedMention{Prompt: "fix the bug"}
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return strings.Contains(p.Message, "not configured")
+	})).Return(&model.Post{Id: "reply-1"}, nil)
+
+	p.launchNewAgent(post, parsed)
+
+	api.AssertCalled(t, "AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "x"
+	}))
+}
+
+func TestHandleMentionInThread_NoWorkflowNoAgent_LaunchesNew(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:        "reply-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-1",
+		Message:   "@cursor fix Y",
+	}
+	parsed := &parser.ParsedMention{Prompt: "fix Y"}
+
+	// No workflow.
+	store.On("GetWorkflowByThread", "root-1").Return(nil, nil)
+
+	// No agent record.
+	store.On("GetAgentIDByThread", "root-1").Return("", nil)
+
+	// Launch new agent.
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	// Thread enrichment.
+	api.On("GetPostThread", "root-1").Return(&model.PostList{
+		Order: []string{"root-1"},
+		Posts: map[string]*model.Post{
+			"root-1": {Id: "root-1", UserId: "user-1", Message: "Original", CreateAt: 1000},
+		},
+	}, nil)
+
+	cursorClient.On("LaunchAgent", mock.Anything, mock.Anything).Return(&cursor.Agent{
+		ID:     "agent-new",
+		Status: cursor.AgentStatusCreating,
+	}, nil)
+
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "reply-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+	store.On("SetThreadAgent", "root-1", "agent-new").Return(nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return()
+
+	p.handleMentionInThread(post, parsed)
+
+	cursorClient.AssertCalled(t, "LaunchAgent", mock.Anything, mock.Anything)
+}
+
+// Helper function for substring matching.
+func containsSubstring(s, substr string) bool {
+	return strings.Contains(s, substr)
 }
