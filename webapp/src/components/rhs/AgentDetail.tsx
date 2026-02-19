@@ -4,11 +4,11 @@ import {useHistory} from 'react-router-dom';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import {addFollowup, cancelAgent, fetchReviewLoop, fetchWorkflow} from '../../actions';
+import {addFollowup, cancelAgent, fetchAgent, fetchReviewLoop, fetchWorkflow} from '../../actions';
 import {getReviewLoopForAgent, getWorkflowForAgent} from '../../selectors';
 import type {Agent, ReviewLoopPhase} from '../../types';
 import ExternalLink from '../common/ExternalLink';
-import PhaseBadge from '../common/PhaseBadge';
+import PhaseBadge, {getDisplayPhase} from '../common/PhaseBadge';
 import PhaseProgress from '../common/PhaseProgress';
 import StatusBadge from '../common/StatusBadge';
 
@@ -166,20 +166,27 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
     const isAborted = agent.status === 'STOPPED' || agent.status === 'FAILED';
     const workflow = useSelector((state: GlobalState) => getWorkflowForAgent(state, agent.id));
     const reviewLoop = useSelector((state: GlobalState) => getReviewLoopForAgent(state, agent.id));
+    const displayPhase = getDisplayPhase(workflow?.phase, reviewLoop?.phase, isAborted);
 
-    // Fetch full workflow details on mount if we have a workflow_id but no workflow in state
+    // Always fetch latest agent data when opening detail view (Bug 3: dashboard may show stale state
+    // after thread updates during a run).
     useEffect(() => {
-        if (agent.workflow_id && !workflow) {
+        dispatch(fetchAgent(agent.id) as any);
+    }, [agent.id, dispatch]);
+
+    // Always fetch full workflow when agent has workflow_id (refresh on open to keep details current).
+    useEffect(() => {
+        if (agent.workflow_id) {
             dispatch(fetchWorkflow(agent.workflow_id) as any);
         }
-    }, [agent.workflow_id, workflow, dispatch]);
+    }, [agent.workflow_id, dispatch]);
 
-    // Fetch full review loop details on mount if we have a review_loop_id but no review loop in state.
+    // Always fetch full review loop when agent has review_loop_id (refresh on open to keep details current).
     useEffect(() => {
-        if (agent.review_loop_id && !reviewLoop) {
+        if (agent.review_loop_id) {
             dispatch(fetchReviewLoop(agent.review_loop_id) as any);
         }
-    }, [agent.review_loop_id, reviewLoop, dispatch]);
+    }, [agent.review_loop_id, dispatch]);
 
     const handleFollowup = () => {
         if (followupText.trim() && agent.status === 'RUNNING') {
@@ -221,8 +228,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                 <div className='cursor-agent-detail-header'>
                     <StatusBadge status={agent.status}/>
                     <span className='cursor-agent-detail-status-text'>{agent.status}</span>
-                    {workflow && !(isAborted && workflow.phase !== 'rejected' && workflow.phase !== 'complete') && <PhaseBadge phase={workflow.phase}/>}
-                    {reviewLoop && <PhaseBadge phase={reviewLoop.phase}/>}
+                    {displayPhase && <PhaseBadge phase={displayPhase}/>}
                 </div>
 
                 <div className='cursor-agent-detail-section'>
@@ -334,7 +340,9 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                         </div>
                     </div>
                 )}
+            </div>
 
+            <div className='cursor-agent-detail-footer'>
                 <div className='cursor-agent-detail-links'>
                     {agent.root_post_id && (
                         <a
@@ -366,31 +374,29 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                         </ExternalLink>
                     )}
                 </div>
-            </div>
 
-            {isActive && (
-                <div className='cursor-agent-detail-actions'>
-                    {agent.status === 'RUNNING' && (
-                        <div className='cursor-agent-detail-followup'>
-                            <div className='cursor-agent-detail-label'>{'Send Follow-up'}</div>
-                            <textarea
-                                className='cursor-textarea'
-                                placeholder='Enter follow-up instructions...'
-                                value={followupText}
-                                onChange={(e) => setFollowupText(e.target.value)}
-                                rows={3}
-                            />
-                            <button
-                                className='btn btn-primary'
-                                onClick={handleFollowup}
-                                disabled={!followupText.trim()}
-                            >
-                                {'Send'}
-                            </button>
-                        </div>
-                    )}
+                {isActive && (
+                    <>
+                        {agent.status === 'RUNNING' && (
+                            <div className='cursor-agent-detail-followup'>
+                                <div className='cursor-agent-detail-label'>{'Send Follow-up'}</div>
+                                <textarea
+                                    className='cursor-textarea'
+                                    placeholder='Enter follow-up instructions...'
+                                    value={followupText}
+                                    onChange={(e) => setFollowupText(e.target.value)}
+                                    rows={3}
+                                />
+                                <button
+                                    className='btn btn-primary'
+                                    onClick={handleFollowup}
+                                    disabled={!followupText.trim()}
+                                >
+                                    {'Send'}
+                                </button>
+                            </div>
+                        )}
 
-                    {isActive && (
                         <div className='cursor-agent-detail-cancel'>
                             <button
                                 className='btn btn-danger'
@@ -399,9 +405,9 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                                 {'Cancel Agent'}
                             </button>
                         </div>
-                    )}
-                </div>
-            )}
+                    </>
+                )}
+            </div>
         </div>
     );
 };

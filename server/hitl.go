@@ -804,7 +804,7 @@ func (p *Plugin) isPlannerStale(workflow *kvstore.HITLWorkflow) bool {
 
 // rejectWorkflowForAgent looks up the HITL workflow associated with an agent
 // and transitions it to rejected if it's still in a non-terminal phase.
-// Called when an agent is cancelled or archived via the dashboard.
+// Called when an agent is explicitly cancelled via the dashboard.
 func (p *Plugin) rejectWorkflowForAgent(agentID string) {
 	workflowID, err := p.kvstore.GetWorkflowByAgent(agentID)
 	if err != nil || workflowID == "" {

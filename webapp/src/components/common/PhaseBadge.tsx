@@ -2,6 +2,21 @@ import React from 'react';
 
 import type {ReviewLoopPhase, WorkflowPhase} from '../../types';
 
+/** Returns a single display phase to avoid contradictory states (e.g. Complete + AI Reviewing). */
+export function getDisplayPhase(
+    workflowPhase?: WorkflowPhase,
+    reviewLoopPhase?: ReviewLoopPhase,
+    isAborted?: boolean,
+): WorkflowPhase | ReviewLoopPhase | undefined {
+    const effectiveWorkflow = workflowPhase && (!isAborted || workflowPhase === 'rejected' || workflowPhase === 'complete') ?
+        workflowPhase :
+        undefined;
+    if (reviewLoopPhase) {
+        return reviewLoopPhase;
+    }
+    return effectiveWorkflow;
+}
+
 interface Props {
     phase: WorkflowPhase | ReviewLoopPhase;
 }

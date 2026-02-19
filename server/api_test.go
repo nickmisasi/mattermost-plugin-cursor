@@ -810,6 +810,48 @@ func TestGetAgents_IncludesWorkflowFields(t *testing.T) {
 	assert.Equal(t, 3, resp.Agents[0].PlanIterationCount)
 }
 
+func TestGetAgents_ReconcilesRejectedImplementerWorkflowPhase(t *testing.T) {
+	p, api, _, store := setupAPITestPlugin(t)
+
+	records := []*kvstore.AgentRecord{
+		{
+			CursorAgentID: "agent-1",
+			Status:        "RUNNING",
+			Repository:    "org/repo",
+			Branch:        "main",
+			ChannelID:     "ch-1",
+			PostID:        "post-1",
+			UserID:        "user-1",
+		},
+	}
+
+	store.On("GetAgentsByUser", "user-1").Return(records, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("wf-1", nil)
+	store.On("GetWorkflow", "wf-1").Return(&kvstore.HITLWorkflow{
+		ID:                 "wf-1",
+		Phase:              kvstore.PhaseRejected,
+		ImplementerAgentID: "agent-1",
+		PlanIterationCount: 2,
+	}, nil)
+	store.On("SaveWorkflow", mock.MatchedBy(func(wf *kvstore.HITLWorkflow) bool {
+		return wf.ID == "wf-1" &&
+			wf.Phase == kvstore.PhaseImplementing &&
+			wf.ImplementerAgentID == "agent-1"
+	})).Return(nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentsListResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.Len(t, resp.Agents, 1)
+	assert.Equal(t, "wf-1", resp.Agents[0].WorkflowID)
+	assert.Equal(t, "implementing", resp.Agents[0].WorkflowPhase)
+	assert.Equal(t, 2, resp.Agents[0].PlanIterationCount)
+}
+
 func TestGetAgents_NoWorkflowFields_WhenNoWorkflow(t *testing.T) {
 	p, _, _, store := setupAPITestPlugin(t)
 
@@ -877,6 +919,52 @@ func TestGetAgent_IncludesWorkflowFields(t *testing.T) {
 	assert.Equal(t, 1, resp.PlanIterationCount)
 }
 
+func TestGetAgent_ReconcilesRejectedWorkflowFromCursorState(t *testing.T) {
+	p, api, cursorClient, store := setupAPITestPlugin(t)
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "FINISHED",
+		Repository:    "org/repo",
+		Branch:        "main",
+		ChannelID:     "ch-1",
+		PostID:        "post-1",
+		UserID:        "user-1",
+	}
+
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("wf-1", nil)
+	store.On("GetWorkflow", "wf-1").Return(&kvstore.HITLWorkflow{
+		ID:                 "wf-1",
+		Phase:              kvstore.PhaseRejected,
+		ImplementerAgentID: "agent-1",
+		PlanIterationCount: 1,
+	}, nil)
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:     "agent-1",
+		Status: cursor.AgentStatusRunning,
+	}, nil)
+	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.CursorAgentID == "agent-1" && r.Status == "RUNNING"
+	})).Return(nil)
+	store.On("SaveWorkflow", mock.MatchedBy(func(wf *kvstore.HITLWorkflow) bool {
+		return wf.ID == "wf-1" &&
+			wf.Phase == kvstore.PhaseImplementing &&
+			wf.ImplementerAgentID == "agent-1"
+	})).Return(nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "RUNNING", resp.Status)
+	assert.Equal(t, "wf-1", resp.WorkflowID)
+	assert.Equal(t, "implementing", resp.WorkflowPhase)
+}
+
 // --- POST /api/v1/agents/{id}/archive ---
 
 func TestArchiveAgent_Success(t *testing.T) {
@@ -894,15 +982,13 @@ func TestArchiveAgent_Success(t *testing.T) {
 		return r.Archived && r.Status == "FINISHED"
 	})).Return(nil)
 
-	// Workflow cleanup (no associated workflow)
-	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
-
 	rr := doRequest(p, http.MethodPost, "/api/v1/agents/agent-1/archive", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
 
 	var resp StatusOKResponse
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, "ok", resp.Status)
+	store.AssertNotCalled(t, "GetWorkflowByAgent", "agent-1")
 }
 
 func TestArchiveAgent_StopsRunningAgent(t *testing.T) {
@@ -921,13 +1007,11 @@ func TestArchiveAgent_StopsRunningAgent(t *testing.T) {
 		return r.Archived && r.Status == "STOPPED"
 	})).Return(nil)
 
-	// Workflow cleanup (no associated workflow)
-	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
-
 	rr := doRequest(p, http.MethodPost, "/api/v1/agents/agent-1/archive", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
 
 	cursorClient.AssertCalled(t, "StopAgent", mock.Anything, "agent-1")
+	store.AssertNotCalled(t, "GetWorkflowByAgent", "agent-1")
 }
 
 func TestArchiveAgent_StopsRunningAgent_AlreadyDeletedInCloud(t *testing.T) {
@@ -956,10 +1040,10 @@ func TestArchiveAgent_StopsRunningAgent_AlreadyDeletedInCloud(t *testing.T) {
 			store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
 				return r.Archived && r.Status == "STOPPED"
 			})).Return(nil)
-			store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 
 			rr := doRequest(p, http.MethodPost, "/api/v1/agents/agent-1/archive", nil, "user-1")
 			assert.Equal(t, http.StatusOK, rr.Code)
+			store.AssertNotCalled(t, "GetWorkflowByAgent", "agent-1")
 		})
 	}
 }

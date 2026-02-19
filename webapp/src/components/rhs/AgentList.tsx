@@ -1,10 +1,11 @@
-import React from 'react';
+import React, {useState, useCallback} from 'react';
 import {useDispatch} from 'react-redux';
 
 import AgentCard from './AgentCard';
 
 import {archiveAgent, unarchiveAgent, openSettings} from '../../actions';
 import type {Agent} from '../../types';
+import ConfirmModal from '../common/ConfirmModal';
 
 interface Props {
     agents: Agent[];
@@ -14,25 +15,25 @@ interface Props {
     onTabChange: (archived: boolean) => void;
 }
 
-const AgentCardWithActions: React.FC<{agent: Agent; onClick: () => void; showArchived: boolean}> = ({agent, onClick, showArchived}) => {
-    const dispatch = useDispatch();
-
-    const handleArchive = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        dispatch(archiveAgent(agent.id) as any);
-    };
-
-    const handleUnarchive = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        dispatch(unarchiveAgent(agent.id) as any);
-    };
+const AgentCardWithActions: React.FC<{
+    agent: Agent;
+    onClick: () => void;
+    showArchived: boolean;
+    loadingAgentId: string | null;
+    onArchiveClick: (e: React.MouseEvent, agentId: string) => void;
+    onUnarchiveClick: (e: React.MouseEvent, agentId: string) => void;
+}> = ({agent, onClick, showArchived, loadingAgentId, onArchiveClick, onUnarchiveClick}) => {
+    const archiveLoading = loadingAgentId === agent.id && !showArchived;
+    const unarchiveLoading = loadingAgentId === agent.id && showArchived;
 
     return (
         <AgentCard
             agent={agent}
             onClick={onClick}
-            onArchive={showArchived ? undefined : handleArchive}
-            onUnarchive={showArchived ? handleUnarchive : undefined}
+            onArchive={showArchived ? undefined : (e) => onArchiveClick(e, agent.id)}
+            onUnarchive={showArchived ? (e) => onUnarchiveClick(e, agent.id) : undefined}
+            archiveLoading={archiveLoading}
+            unarchiveLoading={unarchiveLoading}
         />
     );
 };
@@ -70,6 +71,37 @@ const SettingsCog: React.FC = () => {
 };
 
 const AgentList: React.FC<Props> = ({agents, isLoading, onSelectAgent, showArchived, onTabChange}) => {
+    const dispatch = useDispatch();
+    const [confirmModal, setConfirmModal] = useState<{agentId: string; action: 'archive' | 'unarchive'} | null>(null);
+    const [loadingAgentId, setLoadingAgentId] = useState<string | null>(null);
+
+    const handleArchiveClick = useCallback((e: React.MouseEvent, agentId: string) => {
+        e.stopPropagation();
+        setConfirmModal({agentId, action: 'archive'});
+    }, []);
+
+    const handleUnarchiveClick = useCallback((e: React.MouseEvent, agentId: string) => {
+        e.stopPropagation();
+        setConfirmModal({agentId, action: 'unarchive'});
+    }, []);
+
+    const handleConfirmModalConfirm = useCallback(() => {
+        if (!confirmModal) {
+            return;
+        }
+        const {agentId, action} = confirmModal;
+        setConfirmModal(null);
+        setLoadingAgentId(agentId);
+        const thunk = action === 'archive' ? archiveAgent(agentId) : unarchiveAgent(agentId);
+        (dispatch(thunk as any) as Promise<void>).finally(() => {
+            setLoadingAgentId(null);
+        });
+    }, [confirmModal, dispatch]);
+
+    const handleConfirmModalCancel = useCallback(() => {
+        setConfirmModal(null);
+    }, []);
+
     const sorted = [...agents].sort((a, b) => b.created_at - a.created_at);
 
     return (
@@ -117,8 +149,37 @@ const AgentList: React.FC<Props> = ({agents, isLoading, onSelectAgent, showArchi
                     agent={agent}
                     onClick={() => onSelectAgent(agent.id)}
                     showArchived={showArchived}
+                    loadingAgentId={loadingAgentId}
+                    onArchiveClick={handleArchiveClick}
+                    onUnarchiveClick={handleUnarchiveClick}
                 />
             ))}
+
+            <ConfirmModal
+                show={confirmModal !== null}
+                title={
+                    confirmModal?.action === 'archive' ?
+                        'Archive Agent' :
+                        'Unarchive Agent'
+                }
+                message={
+                    confirmModal?.action === 'archive' ?
+                        'Are you sure you want to archive this agent? It will be moved to the Archived tab.' :
+                        'Are you sure you want to unarchive this agent? It will be moved back to the Active tab.'
+                }
+                confirmText={
+                    confirmModal?.action === 'archive' ?
+                        'Archive' :
+                        'Unarchive'
+                }
+                confirmClassName={
+                    confirmModal?.action === 'archive' ?
+                        'btn-danger' :
+                        'btn-primary'
+                }
+                onConfirm={handleConfirmModalConfirm}
+                onCancel={handleConfirmModalCancel}
+            />
         </div>
     );
 };

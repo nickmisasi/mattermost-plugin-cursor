@@ -4,14 +4,15 @@ import {useSelector, useDispatch} from 'react-redux';
 import AgentDetail from './AgentDetail';
 import AgentList from './AgentList';
 
-import {fetchAgents, selectAgent} from '../../actions';
-import {getSelectedAgent, getAgentsList, getIsLoading} from '../../selectors';
+import {fetchAgent, fetchAgents, selectAgent} from '../../actions';
+import {getSelectedAgent, getSelectedAgentId, getAgentsList, getIsLoading} from '../../selectors';
 
 import '../common/styles.css';
 
 const RHSPanel: React.FC = () => {
     const dispatch = useDispatch();
     const agents = useSelector(getAgentsList);
+    const selectedAgentId = useSelector(getSelectedAgentId);
     const selectedAgent = useSelector(getSelectedAgent);
     const isLoading = useSelector(getIsLoading);
     const [showArchived, setShowArchived] = useState(false);
@@ -19,6 +20,13 @@ const RHSPanel: React.FC = () => {
     useEffect(() => {
         dispatch(fetchAgents(showArchived ? true : undefined) as any);
     }, [dispatch, showArchived]);
+
+    // When selecting via "View Agent Details" from a post, agent may not be in state yet; fetch it.
+    useEffect(() => {
+        if (selectedAgentId && !selectedAgent) {
+            dispatch(fetchAgent(selectedAgentId) as any);
+        }
+    }, [selectedAgentId, selectedAgent, dispatch]);
 
     const handleTabChange = useCallback((archived: boolean) => {
         setShowArchived(archived);
