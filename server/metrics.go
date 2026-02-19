@@ -66,7 +66,7 @@ func getAPIRequestCountsSnapshot() map[string]int {
 	return snapshot
 }
 
-func (p *Plugin) apiMetricsMiddleware(next http.Handler) http.Handler {
+func apiMetricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recordAPIRequest(endpointKey(r))
 		next.ServeHTTP(w, r)
