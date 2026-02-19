@@ -47,7 +47,8 @@ func endpointKey(r *http.Request) string {
 func normalizeAPIPath(path string) string {
 	for _, normalizer := range apiPathNormalizers {
 		if normalizer.pattern.MatchString(path) {
-			return normalizer.replacement
+			// Keep replacements literal; never interpret $n as backreferences.
+			return normalizer.pattern.ReplaceAllLiteralString(path, normalizer.replacement)
 		}
 	}
 
