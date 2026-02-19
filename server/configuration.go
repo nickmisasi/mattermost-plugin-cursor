@@ -7,9 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
+	"github.com/mattermost/mattermost-plugin-cursor/server/ghclient"
 )
 
 // configuration captures the plugin's external configuration as exposed in the Mattermost server
@@ -28,6 +27,13 @@ type configuration struct {
 	EnableContextReview     bool   `json:"EnableContextReview"`
 	EnablePlanLoop          bool   `json:"EnablePlanLoop"`
 	PlannerSystemPrompt     string `json:"PlannerSystemPrompt"`
+
+	// --- AI Review Loop settings ---
+	GitHubPAT           string `json:"GitHubPAT"`
+	EnableAIReviewLoop  bool   `json:"EnableAIReviewLoop"`
+	MaxReviewIterations int    `json:"MaxReviewIterations"`
+	AIReviewerBots      string `json:"AIReviewerBots"`
+	HumanReviewTeam     string `json:"HumanReviewTeam"`
 }
 
 // Clone shallow copies the configuration.
@@ -65,6 +71,23 @@ func (c *configuration) GetPollInterval() int {
 	return c.PollIntervalSeconds
 }
 
+// ParseAIReviewerBots splits the AIReviewerBots config string into individual
+// bot usernames, trimming whitespace and filtering empties.
+func (c *configuration) ParseAIReviewerBots() []string {
+	if c.AIReviewerBots == "" {
+		return nil
+	}
+	parts := strings.Split(c.AIReviewerBots, ",")
+	var bots []string
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			bots = append(bots, trimmed)
+		}
+	}
+	return bots
+}
+
 // getConfiguration retrieves the active configuration under lock, making it safe to use
 // concurrently. The active configuration may change underneath the client of this method, but
 // the struct returned by this API call is considered immutable.
@@ -99,9 +122,8 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 func (p *Plugin) OnConfigurationChange() error {
 	cfg := new(configuration)
 
-	if err := p.API.LoadPluginConfiguration(cfg); err != nil {
-		return errors.Wrap(err, "failed to load plugin configuration")
-	}
+	// Load config from Mattermost server.
+	_ = p.API.LoadPluginConfiguration(cfg)
 
 	// Apply defaults for fields that have default values in plugin.json
 	// but may not be set yet (e.g., fresh install).
@@ -114,6 +136,18 @@ func (p *Plugin) OnConfigurationChange() error {
 	if cfg.PollIntervalSeconds == 0 {
 		cfg.PollIntervalSeconds = 30
 	}
+	if cfg.MaxReviewIterations == 0 {
+		cfg.MaxReviewIterations = 5
+	}
+	if cfg.MaxReviewIterations < 1 {
+		cfg.MaxReviewIterations = 1
+	}
+	if cfg.MaxReviewIterations > 20 {
+		cfg.MaxReviewIterations = 20
+	}
+	if cfg.AIReviewerBots == "" {
+		cfg.AIReviewerBots = "coderabbitai[bot],copilot-pull-request-reviewer"
+	}
 
 	// Validate the configuration.
 	if err := cfg.IsValid(); err != nil {
@@ -122,6 +156,17 @@ func (p *Plugin) OnConfigurationChange() error {
 		// would prevent the plugin from activating at all. Instead, log the warning
 		// and let the plugin run in a degraded state. The health endpoint will
 		// report the specific issue.
+	}
+
+	if cfg.EnableAIReviewLoop && cfg.GitHubPAT == "" {
+		p.API.LogWarn("EnableAIReviewLoop is enabled but GitHubPAT is not set; review loop will not activate")
+	}
+	if cfg.EnableAIReviewLoop && cfg.CursorAPIKey == "" {
+		p.API.LogWarn("EnableAIReviewLoop is enabled but CursorAPIKey is not set; review loop will not activate")
+	}
+	if cfg.EnableAIReviewLoop && cfg.GitHubWebhookSecret == "" {
+		p.API.LogWarn("EnableAIReviewLoop is enabled but GitHubWebhookSecret is not set; " +
+			"review loop will work but with degraded latency (janitor-only mode)")
 	}
 
 	// Validate the Cursor API key by making a lightweight API call.
@@ -138,6 +183,13 @@ func (p *Plugin) OnConfigurationChange() error {
 		p.setCursorClient(cursor.NewClient(cfg.CursorAPIKey, cursor.WithLogger(&pluginLogger{plugin: p})))
 	} else {
 		p.setCursorClient(nil)
+	}
+
+	// Re-initialize the GitHub client with the new PAT.
+	if cfg.GitHubPAT != "" {
+		p.setGitHubClient(ghclient.NewClient(cfg.GitHubPAT))
+	} else {
+		p.setGitHubClient(nil)
 	}
 
 	return nil

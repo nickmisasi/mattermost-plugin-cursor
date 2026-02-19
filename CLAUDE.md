@@ -151,6 +151,7 @@ HITL flags resolve in priority order: per-mention flags > user settings > global
 - **Mock interface updates**: When the `kvstore.KVStore` interface changes, mock implementations must be updated in ALL test files that use them (see `server/store/kvstore/CLAUDE.md`).
 - **Webpack externals**: React, Redux, ReactRedux, ReactDOM are provided by the Mattermost host app. Do not bundle them.
 - **Thread mapping prefix**: Values from `GetAgentIDByThread` starting with `hitl:` are workflow IDs, not agent IDs. Always check the prefix before using as an agent ID.
+- **Review-loop dispatch is direct-only**: Fix iterations use `cursorClient.AddFollowup` only. Do not add legacy `@cursor` PR-comment relay fallback; failures should stay visible via review-loop history and structured logs.
 - **Plan iteration creates NEW agents**: Follow-ups only work on RUNNING agents. Since planners FINISH, iteration requires creating a new planner agent with accumulated context.
 - **autoBranch: false for planners**: The Cursor API defaults `autoBranch: true`, creating orphan branches. Always set `autoBranch: false` in planner launch requests.
 - **PendingFeedback field**: Thread replies during `planning` phase are queued in `HITLWorkflow.PendingFeedback`. They auto-trigger a new planner iteration when the current planner finishes.

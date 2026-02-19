@@ -246,6 +246,46 @@ func (m *mockKVStore) DeleteAgentWorkflow(cursorAgentID string) error {
 	return m.Called(cursorAgentID).Error(0)
 }
 
+func (m *mockKVStore) GetReviewLoop(reviewLoopID string) (*kvstore.ReviewLoop, error) {
+	args := m.Called(reviewLoopID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
+}
+
+func (m *mockKVStore) SaveReviewLoop(loop *kvstore.ReviewLoop) error {
+	return m.Called(loop).Error(0)
+}
+
+func (m *mockKVStore) DeleteReviewLoop(reviewLoopID string) error {
+	return m.Called(reviewLoopID).Error(0)
+}
+
+func (m *mockKVStore) GetReviewLoopByPRURL(prURL string) (*kvstore.ReviewLoop, error) {
+	args := m.Called(prURL)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
+}
+
+func (m *mockKVStore) GetReviewLoopByAgent(agentRecordID string) (*kvstore.ReviewLoop, error) {
+	args := m.Called(agentRecordID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*kvstore.ReviewLoop), args.Error(1)
+}
+
+func (m *mockKVStore) GetAllFinishedAgentsWithPR() ([]*kvstore.AgentRecord, error) {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*kvstore.AgentRecord), args.Error(1)
+}
+
 // setupTestPlugin creates a Plugin with mocked dependencies for handler testing.
 func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient, *mockKVStore) {
 	t.Helper()
@@ -253,12 +293,38 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 	api := &plugintest.API{}
 	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogDebug",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything,
+	).Maybe()
 	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+	).Maybe()
+	api.On("LogWarn",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+	).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+	).Maybe()
 
 	// ShouldProcessMessage calls GetUser to check if the poster is a bot.
 	api.On("GetUser", "user-1").Return(&model.User{
@@ -496,6 +562,31 @@ func TestMessageHasBeenPosted_APIError_AddsX(t *testing.T) {
 
 	cursorClient.AssertExpectations(t)
 	api.AssertExpectations(t)
+}
+
+func TestFormatAPIError_BranchNotFound_AppendsTip(t *testing.T) {
+	// When the error contains "does not exist in repository", the message should
+	// include a tip about using the branch= override.
+	err := &cursor.APIError{
+		StatusCode: 400,
+		Message:    "Branch 'cursor-env' does not exist in repository nickmisasi/mattermost-plugin-cursor.",
+		RawBody:    `{"message":"Branch 'cursor-env' does not exist in repository nickmisasi/mattermost-plugin-cursor."}`,
+	}
+	result := formatAPIError("Failed to launch agent", err)
+	assert.Contains(t, result, "does not exist in repository")
+	assert.Contains(t, result, "Tip:")
+	assert.Contains(t, result, "branch=main")
+}
+
+func TestFormatAPIError_OtherError_NoTip(t *testing.T) {
+	// A generic error should not include the branch tip.
+	err := &cursor.APIError{
+		StatusCode: 500,
+		Message:    "Internal server error",
+	}
+	result := formatAPIError("Failed to launch agent", err)
+	assert.NotContains(t, result, "Tip:")
+	assert.NotContains(t, result, "branch=main")
 }
 
 func TestMessageHasBeenPosted_FollowUp_RunningAgent(t *testing.T) {

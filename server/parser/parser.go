@@ -47,7 +47,7 @@ var (
 	bracketedRe = regexp.MustCompile(`^\[([^\]]+)\]`)
 	inlineOptRe = regexp.MustCompile(`(?i)\b(repo|branch|model|autopr|review|plan)=(\S+)`)
 	inRepoRe    = regexp.MustCompile(`(?i)\bin\s+([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)\s*,?`)
-	withModelRe = regexp.MustCompile(`(?i)\bwith\s+([a-zA-Z0-9._-]+)\s*,?`)
+	withModelRe = regexp.MustCompile(`(?i)(?:^|,\s*)\s*with\s+([a-zA-Z0-9._-]+)\s*,?`)
 	multiSpace  = regexp.MustCompile(`\s{2,}`)
 	flagRe      = regexp.MustCompile(`(?i)--(?:no-review|no-plan|direct)\b`)
 )

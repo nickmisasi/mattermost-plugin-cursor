@@ -1,7 +1,7 @@
 import {Client4} from 'mattermost-redux/client';
 
 import Client from './client';
-import type {Agent, AgentStatus, AgentStatusChangeEvent, AgentCreatedEvent, Workflow, WorkflowPhase, WorkflowPhaseChangeEvent} from './types';
+import type {Agent, AgentStatus, AgentStatusChangeEvent, AgentCreatedEvent, ReviewLoop, ReviewLoopPhase, ReviewLoopChangeEvent, Workflow, WorkflowPhase, WorkflowPhaseChangeEvent} from './types';
 
 // Action type constants
 export const AGENTS_RECEIVED = 'com.mattermost.plugin-cursor/AGENTS_RECEIVED';
@@ -13,6 +13,8 @@ export const SELECT_AGENT = 'com.mattermost.plugin-cursor/SELECT_AGENT';
 export const SET_LOADING = 'com.mattermost.plugin-cursor/SET_LOADING';
 export const WORKFLOW_RECEIVED = 'com.mattermost.plugin-cursor/WORKFLOW_RECEIVED';
 export const WORKFLOW_PHASE_CHANGED = 'com.mattermost.plugin-cursor/WORKFLOW_PHASE_CHANGED';
+export const REVIEW_LOOP_CHANGED = 'com.mattermost.plugin-cursor/REVIEW_LOOP_CHANGED';
+export const REVIEW_LOOP_RECEIVED = 'com.mattermost.plugin-cursor/REVIEW_LOOP_RECEIVED';
 
 // Action interfaces
 interface AgentsReceivedAction {
@@ -32,6 +34,7 @@ interface AgentStatusChangedAction {
         status: AgentStatus;
         pr_url: string;
         summary: string;
+        target_branch?: string;
         updated_at: number;
     };
 }
@@ -73,6 +76,23 @@ interface WorkflowPhaseChangedAction {
     };
 }
 
+interface ReviewLoopChangedAction {
+    type: typeof REVIEW_LOOP_CHANGED;
+    data: {
+        review_loop_id: string;
+        agent_record_id: string;
+        phase: ReviewLoopPhase;
+        iteration: number;
+        pr_url: string;
+        updated_at: number;
+    };
+}
+
+interface ReviewLoopReceivedAction {
+    type: typeof REVIEW_LOOP_RECEIVED;
+    data: ReviewLoop;
+}
+
 export type PluginAction =
     | AgentsReceivedAction
     | AgentReceivedAction
@@ -82,7 +102,9 @@ export type PluginAction =
     | SelectAgentAction
     | SetLoadingAction
     | WorkflowReceivedAction
-    | WorkflowPhaseChangedAction;
+    | WorkflowPhaseChangedAction
+    | ReviewLoopChangedAction
+    | ReviewLoopReceivedAction;
 
 // --- Sync action creators ---
 
@@ -190,6 +212,17 @@ export function fetchWorkflow(workflowId: string) {
     };
 }
 
+export function fetchReviewLoop(reviewLoopId: string) {
+    return async (dispatch: (action: PluginAction) => void) => {
+        try {
+            const reviewLoop = await Client.getReviewLoop(reviewLoopId);
+            dispatch({type: REVIEW_LOOP_RECEIVED, data: reviewLoop});
+        } catch (error) {
+            console.error('Failed to fetch review loop:', error); // eslint-disable-line no-console
+        }
+    };
+}
+
 // --- WebSocket event handlers ---
 
 const parseTimestamp = (value: string): number => {
@@ -204,6 +237,7 @@ export const websocketAgentStatusChange = (data: AgentStatusChangeEvent): AgentS
         status: data.status,
         pr_url: data.pr_url,
         summary: data.summary,
+        target_branch: data.target_branch,
         updated_at: parseTimestamp(data.updated_at),
     },
 });
@@ -215,6 +249,7 @@ export const websocketAgentCreated = (data: AgentCreatedEvent): AgentCreatedActi
         status: data.status,
         repository: data.repository,
         branch: data.branch,
+        target_branch: data.target_branch,
         prompt: data.prompt,
         description: data.description || '',
         pr_url: '',
@@ -237,6 +272,18 @@ export const websocketWorkflowPhaseChange = (data: WorkflowPhaseChangeEvent): Wo
         planner_agent_id: data.planner_agent_id,
         implementer_agent_id: data.implementer_agent_id,
         plan_iteration_count: parseInt(data.plan_iteration_count, 10) || 0,
+        updated_at: parseTimestamp(data.updated_at),
+    },
+});
+
+export const websocketReviewLoopChanged = (data: ReviewLoopChangeEvent): ReviewLoopChangedAction => ({
+    type: REVIEW_LOOP_CHANGED,
+    data: {
+        review_loop_id: data.review_loop_id,
+        agent_record_id: data.agent_record_id,
+        phase: data.phase,
+        iteration: parseInt(data.iteration, 10) || 0,
+        pr_url: data.pr_url,
         updated_at: parseTimestamp(data.updated_at),
     },
 });

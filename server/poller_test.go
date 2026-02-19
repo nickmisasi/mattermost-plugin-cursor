@@ -39,6 +39,10 @@ func setupPollerPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClien
 		Props:  model.StringInterface{},
 	}, nil).Maybe()
 
+	// AddReaction / RemoveReaction for review loop and status transitions.
+	api.On("AddReaction", mock.Anything).Return(nil, nil).Maybe()
+	api.On("RemoveReaction", mock.Anything).Return(nil).Maybe()
+
 	// getUsername calls GetUser.
 	api.On("GetUser", mock.AnythingOfType("string")).Return(&model.User{
 		Id:       "user-1",
@@ -611,4 +615,239 @@ func TestPoller_NonWorkflowAgent_NormalHandling(t *testing.T) {
 
 	api.AssertCalled(t, "RemoveReaction", mock.Anything)
 	api.AssertCalled(t, "AddReaction", mock.Anything)
+}
+
+// --- Review Loop poller tests ---
+
+func TestHandleAgentFinished_NoLongerStartsLoop(t *testing.T) {
+	// Verify that handleAgentFinished does NOT call startReviewLoop anymore.
+	// The webhook-primary architecture handles this.
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.GitHubPAT = "ghp_test"
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Fixed the bug",
+		Target:  cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/42"},
+	}, nil)
+
+	// Normal finish handling mocks.
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	// Janitor sweep: returns empty list (no agents pending reconciliation yet).
+	store.On("GetAllFinishedAgentsWithPR").Return([]*kvstore.AgentRecord{}, nil)
+
+	p.pollAgentStatuses()
+
+	// handleAgentFinished should NOT have started the review loop.
+	// The janitor sweep ran but found nothing to reconcile (the finishedpr index
+	// is maintained by SaveAgent, but our mock doesn't track that).
+	store.AssertNotCalled(t, "SaveReviewLoop")
+	ghMock.AssertNotCalled(t, "RequestReviewers")
+}
+
+func TestPoller_FinishedWithPR_ReviewLoopDisabled(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	// Review loop NOT enabled.
+	p.configuration.EnableAIReviewLoop = false
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Done",
+		Target:  cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/42"},
+	}, nil)
+
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "msg-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	p.pollAgentStatuses()
+
+	// Should NOT have attempted review loop (disabled config).
+	store.AssertNotCalled(t, "GetReviewLoopByPRURL")
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestPoller_FinishedNoPR_NoReviewLoop(t *testing.T) {
+	p, api, cursorClient, store := setupPollerPlugin(t)
+
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.GitHubPAT = "ghp_test"
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "RUNNING",
+		TriggerPostID:  "trigger-1",
+		PostID:         "root-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+		TargetBranch:   "cursor/add-ratelimiter",
+	}
+
+	store.On("ListActiveAgents").Return([]*kvstore.AgentRecord{record}, nil)
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
+		ID:      "agent-1",
+		Status:  cursor.AgentStatusFinished,
+		Summary: "Done, no PR created",
+		Target:  cursor.AgentTarget{PrURL: "", BranchName: "cursor/add-ratelimiter"}, // No PR.
+	}, nil)
+
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+
+	// The thread notification should mention the branch name and no PR.
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return p.RootId == "root-1" &&
+			containsSubstring(p.Message, "no PR") &&
+			containsSubstring(p.Message, "cursor/add-ratelimiter")
+	})).Return(&model.Post{Id: "msg-1"}, nil)
+
+	store.On("SaveAgent", mock.Anything).Return(nil)
+
+	// Janitor sweep: returns empty list (no agents with PrURL pending).
+	store.On("GetAllFinishedAgentsWithPR").Return([]*kvstore.AgentRecord{}, nil)
+
+	p.pollAgentStatuses()
+
+	// No PR URL => no review loop from either handleAgentFinished or janitor.
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+// --- Janitor sweep tests ---
+
+func TestJanitorSweep_BootstrapsMissingLoop(t *testing.T) {
+	p, _, _, store := setupPollerPlugin(t)
+
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.GitHubPAT = "ghp_test"
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+
+	agent := &kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		Status:         "FINISHED",
+		PrURL:          "https://github.com/org/repo/pull/42",
+		PostID:         "root-1",
+		TriggerPostID:  "trigger-1",
+		ChannelID:      "ch-1",
+		UserID:         "user-1",
+		BotReplyPostID: "bot-reply-1",
+	}
+
+	store.On("GetAllFinishedAgentsWithPR").Return([]*kvstore.AgentRecord{agent}, nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("SaveReviewLoop", mock.Anything).Return(nil)
+	store.On("GetAgent", "agent-1").Return(agent, nil)
+
+	ghMock.On("MarkPRReadyForReview", mock.Anything, "org", "repo", 42).Return(nil)
+	ghMock.On("RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything).Return(nil)
+
+	p.janitorSweep()
+
+	store.AssertCalled(t, "SaveReviewLoop", mock.Anything)
+	ghMock.AssertCalled(t, "RequestReviewers", mock.Anything, "org", "repo", 42, mock.Anything)
+}
+
+func TestJanitorSweep_SkipsExistingLoop(t *testing.T) {
+	p, _, _, store := setupPollerPlugin(t)
+
+	p.configuration.EnableAIReviewLoop = true
+	p.configuration.GitHubPAT = "ghp_test"
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+
+	agent := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "FINISHED",
+		PrURL:         "https://github.com/org/repo/pull/42",
+	}
+
+	existingLoop := &kvstore.ReviewLoop{
+		ID:    "rl-1",
+		PRURL: "https://github.com/org/repo/pull/42",
+	}
+
+	store.On("GetAllFinishedAgentsWithPR").Return([]*kvstore.AgentRecord{agent}, nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(existingLoop, nil)
+
+	p.janitorSweep()
+
+	// Should NOT create a new loop.
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestJanitorSweep_DisabledConfig(t *testing.T) {
+	p, _, _, store := setupPollerPlugin(t)
+
+	// EnableAIReviewLoop is false by default.
+	p.configuration.EnableAIReviewLoop = false
+
+	p.janitorSweep()
+
+	// Should return immediately without scanning.
+	store.AssertNotCalled(t, "GetAllFinishedAgentsWithPR")
+}
+
+func TestJanitorSweep_NoGitHubClient(t *testing.T) {
+	p, _, _, store := setupPollerPlugin(t)
+
+	p.configuration.EnableAIReviewLoop = true
+	p.githubClient = nil
+
+	p.janitorSweep()
+
+	// Should return immediately without scanning.
+	store.AssertNotCalled(t, "GetAllFinishedAgentsWithPR")
 }

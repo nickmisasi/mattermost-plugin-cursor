@@ -103,21 +103,31 @@ func BuildRunningAttachment(agentID, repo, branch, modelName string) *model.Slac
 
 // BuildFinishedAttachment creates an attachment for a successfully finished agent.
 // If prURL is non-empty, a "View PR" link is prepended to the links line.
-func BuildFinishedAttachment(agentID, repo, branch, modelName, summary, prURL string) *model.SlackAttachment {
+// If prURL is empty but targetBranch is non-empty, a note about the missing PR is shown
+// with the branch name so users can create a PR manually.
+func BuildFinishedAttachment(agentID, repo, branch, modelName, summary, prURL, targetBranch string) *model.SlackAttachment {
 	links := agentLinks(agentID)
 	if prURL != "" {
 		links = fmt.Sprintf("[View PR](%s) | %s", prURL, links)
 	}
 
-	text := links
+	var textParts []string
 	if summary != "" {
-		text = summary + "\n\n" + links
+		textParts = append(textParts, summary)
 	}
+	if prURL == "" {
+		noPRNote := "No pull request was created."
+		if targetBranch != "" {
+			noPRNote += fmt.Sprintf(" The agent's changes are on branch `%s` -- you can create a PR manually.", targetBranch)
+		}
+		textParts = append(textParts, noPRNote)
+	}
+	textParts = append(textParts, links)
 
 	return &model.SlackAttachment{
 		Color:  ColorGreen,
 		Title:  "Agent finished!",
-		Text:   text,
+		Text:   strings.Join(textParts, "\n\n"),
 		Fields: metadataFields(repo, branch, modelName),
 	}
 }
@@ -306,5 +316,146 @@ func BuildContextRejectedAttachment(username string) *model.SlackAttachment {
 	return &model.SlackAttachment{
 		Color: ColorGrey,
 		Title: fmt.Sprintf("Context rejected by @%s -- workflow cancelled.", username),
+	}
+}
+
+// reviewStatusLine returns the status text for the review loop phase.
+// Iteration count is shown only when > 1 for cleanliness.
+func reviewStatusLine(phase string, iteration int) string {
+	iterSuffix := ""
+	if iteration > 1 {
+		iterSuffix = fmt.Sprintf(" (iteration %d)", iteration)
+	}
+
+	switch phase {
+	case "requesting_review":
+		return "AI Review: Requesting reviewers..."
+	case "awaiting_review":
+		return fmt.Sprintf("AI Review: Waiting for CodeRabbit%s", iterSuffix)
+	case "cursor_fixing":
+		return fmt.Sprintf("AI Review: Cursor fixing feedback%s", iterSuffix)
+	case "approved":
+		return fmt.Sprintf("AI Review: Approved by CodeRabbit after %d iteration(s)", iteration)
+	case "human_review":
+		return "AI Review: Waiting for human reviewer"
+	case "complete":
+		return "AI Review: Complete"
+	case "max_iterations":
+		return "AI Review: Max iterations reached -- needs manual review"
+	case "failed":
+		return "AI Review: Error -- check logs"
+	default:
+		return fmt.Sprintf("AI Review: %s", phase)
+	}
+}
+
+// BuildFinishedWithReviewStatusAttachment creates a finished attachment with an
+// appended review loop status line. This is used to update the existing bot reply
+// post in-place as the review loop progresses.
+func BuildFinishedWithReviewStatusAttachment(
+	agentID, repo, branch, modelName, summary, prURL string,
+	reviewPhase string,
+	iteration int,
+) *model.SlackAttachment {
+	links := agentLinks(agentID)
+	if prURL != "" {
+		links = fmt.Sprintf("[View PR](%s) | %s", prURL, links)
+	}
+
+	statusLine := reviewStatusLine(reviewPhase, iteration)
+
+	var textParts []string
+	if summary != "" {
+		textParts = append(textParts, summary)
+	}
+	textParts = append(textParts, links)
+	textParts = append(textParts, "---")
+	textParts = append(textParts, statusLine)
+	text := strings.Join(textParts, "\n\n")
+
+	color := ColorGreen // default: finished card stays green
+	switch reviewPhase {
+	case "requesting_review", "awaiting_review", "cursor_fixing":
+		color = ColorBlue
+	case "max_iterations":
+		color = ColorGrey
+	case "failed":
+		color = ColorRed
+	}
+
+	return &model.SlackAttachment{
+		Color:  color,
+		Title:  "Agent finished!",
+		Text:   text,
+		Fields: metadataFields(repo, branch, modelName),
+	}
+}
+
+// BuildReviewApprovedAttachment creates a completion attachment for when
+// CodeRabbit approves the PR. Posted as a new thread message.
+func BuildReviewApprovedAttachment(prURL string, totalIterations int) *model.SlackAttachment {
+	title := "CodeRabbit approved the PR!"
+	if totalIterations > 1 {
+		title = fmt.Sprintf("CodeRabbit approved the PR after %d iterations!", totalIterations)
+	}
+
+	text := ""
+	if prURL != "" {
+		text = fmt.Sprintf("[View PR](%s)", prURL)
+	}
+
+	return &model.SlackAttachment{
+		Color: ColorGreen,
+		Title: title,
+		Text:  text,
+	}
+}
+
+// BuildMaxIterationsAttachment creates a completion attachment for when
+// the review loop hits the max iteration limit. Posted as a new thread message.
+func BuildMaxIterationsAttachment(prURL string, maxIterations int) *model.SlackAttachment {
+	title := fmt.Sprintf("AI review loop reached the maximum of %d iterations.", maxIterations)
+
+	text := "Manual review is required."
+	if prURL != "" {
+		text = fmt.Sprintf("[View PR](%s) -- manual review is required.", prURL)
+	}
+
+	return &model.SlackAttachment{
+		Color: ColorGrey,
+		Title: title,
+		Text:  text,
+	}
+}
+
+// BuildReviewCompleteAttachment creates a completion attachment for when
+// a human reviewer approves the PR. Posted as a new thread message.
+func BuildReviewCompleteAttachment(prURL, reviewer string) *model.SlackAttachment {
+	title := fmt.Sprintf("PR approved by %s! Review loop complete.", reviewer)
+
+	text := ""
+	if prURL != "" {
+		text = fmt.Sprintf("[View PR](%s)", prURL)
+	}
+
+	return &model.SlackAttachment{
+		Color: ColorGreen,
+		Title: title,
+		Text:  text,
+	}
+}
+
+// BuildReviewFailedAttachment creates a completion attachment for when
+// the review loop fails due to an error. Posted as a new thread message.
+func BuildReviewFailedAttachment(detail string) *model.SlackAttachment {
+	text := "Check plugin logs for details."
+	if detail != "" {
+		text = detail
+	}
+
+	return &model.SlackAttachment{
+		Color: ColorRed,
+		Title: "AI review loop failed.",
+		Text:  text,
 	}
 }

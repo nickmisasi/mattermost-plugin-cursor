@@ -681,6 +681,7 @@ func (p *Plugin) launchImplementerFromWorkflow(workflow *kvstore.HITLWorkflow) {
 		Target: &cursor.Target{
 			BranchName:   fmt.Sprintf("cursor/%s", sanitizeBranchName(workflow.OriginalPrompt)),
 			AutoCreatePr: workflow.AutoCreatePR,
+			AutoBranch:   true,
 		},
 		Model: workflow.Model,
 	}

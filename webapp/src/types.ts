@@ -10,12 +10,24 @@ export type WorkflowPhase =
     | 'rejected'
     | 'complete';
 
+// Review loop phase as tracked by the AI review system
+export type ReviewLoopPhase =
+    | 'requesting_review'
+    | 'awaiting_review'
+    | 'cursor_fixing'
+    | 'approved'
+    | 'human_review'
+    | 'complete'
+    | 'max_iterations'
+    | 'failed';
+
 // Agent data as stored/returned by the plugin backend
 export interface Agent {
     id: string;
     status: AgentStatus;
     repository: string;
     branch: string;
+    target_branch?: string;
     prompt: string;
     description?: string;
     pr_url: string;
@@ -35,6 +47,11 @@ export interface Agent {
     workflow_id?: string;
     workflow_phase?: WorkflowPhase;
     plan_iteration_count?: number;
+
+    // Review loop fields (populated when agent has an active review loop)
+    review_loop_id?: string;
+    review_loop_phase?: ReviewLoopPhase;
+    review_loop_iteration?: number;
 }
 
 // Response from GET /api/v1/agents
@@ -83,6 +100,7 @@ export interface AgentStatusChangeEvent {
     pr_url: string;
     summary: string;
     repository: string;
+    target_branch?: string;
     updated_at: string;
 }
 
@@ -92,12 +110,40 @@ export interface AgentCreatedEvent {
     status: AgentStatus;
     repository: string;
     branch: string;
+    target_branch?: string;
     prompt: string;
     description?: string;
     channel_id: string;
     post_id: string;
     cursor_url: string;
     created_at: string;
+}
+
+// Timeline event for a review loop
+export interface ReviewLoopEvent {
+    phase: ReviewLoopPhase;
+    timestamp: number;
+    detail?: string;
+}
+
+// ReviewLoop data as returned by the plugin backend
+export interface ReviewLoop {
+    id: string;
+    agent_record_id: string;
+    workflow_id?: string;
+    user_id: string;
+    channel_id: string;
+    root_post_id: string;
+    trigger_post_id: string;
+    pr_url: string;
+    pr_number: number;
+    repository: string;
+    phase: ReviewLoopPhase;
+    iteration: number;
+    last_commit_sha?: string;
+    history: ReviewLoopEvent[];
+    created_at: number;
+    updated_at: number;
 }
 
 // WebSocket event data for workflow_phase_change
@@ -110,10 +156,21 @@ export interface WorkflowPhaseChangeEvent {
     updated_at: string; // comes as string over WebSocket
 }
 
+// WebSocket event data for review_loop_changed
+export interface ReviewLoopChangeEvent {
+    review_loop_id: string;
+    agent_record_id: string;
+    phase: ReviewLoopPhase;
+    iteration: string; // comes as string over WebSocket
+    pr_url: string;
+    updated_at: string; // comes as string over WebSocket
+}
+
 // Plugin Redux state shape
 export interface PluginState {
     agents: Record<string, Agent>;
     workflows: Record<string, Workflow>;
+    reviewLoops: Record<string, ReviewLoop>;
     selectedAgentId: string | null;
     isLoading: boolean;
 }

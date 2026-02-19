@@ -17,6 +17,7 @@ import (
 
 	"github.com/mattermost/mattermost-plugin-cursor/server/command"
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
+	"github.com/mattermost/mattermost-plugin-cursor/server/ghclient"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
@@ -29,6 +30,9 @@ type Plugin struct {
 
 	// cursorClient is the Cursor Background Agents API client.
 	cursorClient cursor.Client
+
+	// githubClient is the GitHub API client for the review loop.
+	githubClient ghclient.Client
 
 	// kvstore is the KV store abstraction for plugin state.
 	kvstore kvstore.KVStore
@@ -51,7 +55,7 @@ type Plugin struct {
 	// router is the HTTP router for handling API requests.
 	router *mux.Router
 
-	// configurationLock synchronizes access to the configuration, cursorClient, and botUserID.
+	// configurationLock synchronizes access to the configuration, cursorClient, githubClient, and botUserID.
 	configurationLock sync.RWMutex
 
 	// configuration is the active plugin configuration.
@@ -86,6 +90,20 @@ func (p *Plugin) setCursorClient(client cursor.Client) {
 	p.configurationLock.Lock()
 	defer p.configurationLock.Unlock()
 	p.cursorClient = client
+}
+
+// getGitHubClient returns the GitHub API client under read lock.
+func (p *Plugin) getGitHubClient() ghclient.Client {
+	p.configurationLock.RLock()
+	defer p.configurationLock.RUnlock()
+	return p.githubClient
+}
+
+// setGitHubClient sets the GitHub API client under write lock.
+func (p *Plugin) setGitHubClient(client ghclient.Client) {
+	p.configurationLock.Lock()
+	defer p.configurationLock.Unlock()
+	p.githubClient = client
 }
 
 // getBotUserID returns the bot user ID under read lock.
@@ -154,6 +172,11 @@ func (p *Plugin) OnActivate() error {
 	cfg := p.getConfiguration()
 	if cfg.CursorAPIKey != "" {
 		p.setCursorClient(cursor.NewClient(cfg.CursorAPIKey, cursor.WithLogger(&pluginLogger{plugin: p})))
+	}
+
+	// Initialize the GitHub client (may be nil if PAT not configured yet).
+	if cfg.GitHubPAT != "" {
+		p.setGitHubClient(ghclient.NewClient(cfg.GitHubPAT))
 	}
 
 	// Set up the HTTP router.

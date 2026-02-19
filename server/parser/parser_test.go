@@ -280,6 +280,48 @@ func TestParse(t *testing.T) {
 			botMention: "@cursor",
 			expected:   &ParsedMention{Prompt: "fix the thing", ForceNew: true, Direct: true},
 		},
+
+		// --- BUG-1: "with" in natural prose should NOT extract a model ---
+		{
+			name:       "with in natural prose not extracted as model",
+			message:    "@cursor fix the alignment issue with tests",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the alignment issue with tests"},
+		},
+		{
+			name:       "with errors in natural prose not extracted as model",
+			message:    "@cursor Add ratelimit.go with errors handled properly",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "Add ratelimit.go with errors handled properly"},
+		},
+		{
+			name:       "with tests. trailing period not extracted as model",
+			message:    "@cursor Include server/ratelimit_test.go with tests.",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "Include server/ratelimit_test.go with tests."},
+		},
+		{
+			name:       "with model at start still works",
+			message:    "@cursor with opus fix the login bug",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix the login bug", Model: "opus"},
+		},
+		{
+			name:       "with model after comma still works",
+			message:    "@cursor in org/repo, with claude-3.5-sonnet, fix it",
+			botMention: "@cursor",
+			expected:   &ParsedMention{Prompt: "fix it", Repository: "org/repo", Model: "claude-3.5-sonnet"},
+		},
+		{
+			name:       "QA repro: ratelimiter prompt with tests at end",
+			message:    "@cursor --direct repo=nickmisasi/mattermost-plugin-cursor Add a new file server/ratelimit.go that implements a simple in-memory per-user rate limiter for the plugin HTTP API. Use a map to track request counts per user ID, provide a RateLimitMiddleware(next http.Handler) http.Handler function, and return HTTP 429 when a user exceeds 100 requests per minute. Include server/ratelimit_test.go with tests.",
+			botMention: "@cursor",
+			expected: &ParsedMention{
+				Prompt:     "Add a new file server/ratelimit.go that implements a simple in-memory per-user rate limiter for the plugin HTTP API. Use a map to track request counts per user ID, provide a RateLimitMiddleware(next http.Handler) http.Handler function, and return HTTP 429 when a user exceeds 100 requests per minute. Include server/ratelimit_test.go with tests.",
+				Repository: "nickmisasi/mattermost-plugin-cursor",
+				Direct:     true,
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
@@ -24,7 +27,9 @@ const (
 	eventPullRequestReview = "pull_request_review"
 	eventPing              = "ping"
 
-	prActionClosed = "closed"
+	prActionClosed      = "closed"
+	prActionOpened      = "opened"
+	prActionSynchronize = "synchronize"
 
 	reviewActionSubmitted = "submitted"
 
@@ -47,6 +52,7 @@ type ghPullRequest struct {
 	Merged  bool   `json:"merged"`
 	Head    struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -222,8 +228,17 @@ func (p *Plugin) handlePullRequestEvent(w http.ResponseWriter, body []byte) {
 		return
 	}
 
-	// Only handle PR closed (merged or closed-without-merge).
-	if event.Action != prActionClosed {
+	// Route by action.
+	switch event.Action {
+	case prActionSynchronize:
+		p.handlePRSynchronizeWebhook(event, w)
+		return
+	case prActionOpened:
+		p.handlePROpened(event, w)
+		return
+	case prActionClosed:
+		// Fall through to existing closed handling below.
+	default:
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -272,6 +287,102 @@ func (p *Plugin) handlePullRequestEvent(w http.ResponseWriter, body []byte) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handlePRSynchronizeWebhook handles the synchronize action (new commits pushed) for a PR.
+// If the PR has an active review loop in the cursor_fixing phase, it triggers re-review.
+func (p *Plugin) handlePRSynchronizeWebhook(event PullRequestEvent, w http.ResponseWriter) {
+	loop, err := p.kvstore.GetReviewLoopByPRURL(event.PullRequest.HTMLURL)
+	if err != nil {
+		p.API.LogError("Failed to look up review loop for synchronize event",
+			"error", err.Error(),
+			"pr_url", event.PullRequest.HTMLURL,
+		)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if loop == nil || loop.Phase != kvstore.ReviewPhaseCursorFixing {
+		// No active review loop or not in cursor_fixing phase -- ignore.
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if err := p.handlePRSynchronize(loop, event.PullRequest); err != nil {
+		p.API.LogError("Failed to handle PR synchronize for review loop",
+			"error", err.Error(),
+			"review_loop_id", loop.ID,
+		)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handlePROpened handles a newly opened PR. This is the PRIMARY path for:
+// 1. Linking a PR to an agent (backfilling PrURL)
+// 2. Starting the AI review loop
+// 3. Posting a PR notification in the agent's thread
+func (p *Plugin) handlePROpened(event PullRequestEvent, w http.ResponseWriter) {
+	agent := p.findAgentForPR(event.PullRequest)
+	if agent == nil {
+		p.API.LogDebug("No agent found for opened PR", "pr_url", event.PullRequest.HTMLURL)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	prURL := event.PullRequest.HTMLURL
+	changed := false
+
+	// Step 1: Backfill PrURL if empty.
+	if agent.PrURL == "" {
+		agent.PrURL = prURL
+		changed = true
+	}
+
+	// Step 2: Backfill TargetBranch if empty.
+	if agent.TargetBranch == "" && event.PullRequest.Head.Ref != "" {
+		agent.TargetBranch = event.PullRequest.Head.Ref
+		changed = true
+	}
+
+	if changed {
+		agent.UpdatedAt = time.Now().UnixMilli()
+		if err := p.kvstore.SaveAgent(agent); err != nil {
+			p.API.LogError("Failed to backfill agent from PR opened webhook",
+				"error", err.Error(),
+				"agent_id", agent.CursorAgentID,
+				"pr_url", prURL,
+			)
+		}
+		// Publish WebSocket event so RHS updates immediately.
+		p.publishAgentStatusChange(agent)
+	}
+
+	// Step 3: Post PR notification in thread.
+	prTitle := fmt.Sprintf("PR #%d: %s", event.PullRequest.Number, event.PullRequest.Title)
+	prAttachment := &model.SlackAttachment{
+		Color:     "#2389D7", // blue
+		Title:     prTitle,
+		TitleLink: prURL,
+		Text:      fmt.Sprintf("Pull request opened on branch `%s`.", event.PullRequest.Head.Ref),
+	}
+	p.postThreadNotificationWithAttachment(agent, prAttachment)
+
+	// Step 4: Start review loop if agent is FINISHED and review loop is enabled.
+	// If agent is still RUNNING, the poller will handle it when it detects FINISHED.
+	if cursor.AgentStatus(agent.Status).IsTerminal() &&
+		p.getConfiguration().EnableAIReviewLoop &&
+		p.getGitHubClient() != nil {
+		if err := p.startReviewLoop(agent); err != nil {
+			p.API.LogError("Failed to start review loop from PR opened webhook",
+				"error", err.Error(),
+				"agent_id", agent.CursorAgentID,
+				"pr_url", prURL,
+			)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte) {
 	var event PullRequestReviewEvent
 	if err := json.Unmarshal(body, &event); err != nil {
@@ -286,12 +397,61 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 		return
 	}
 
-	// Look up the agent associated with this PR.
+	// --- Review Loop phase-aware gating ---
+	reviewerType := p.reviewerTypeForLogin(event.Review.User.Login)
+	loop := p.ensureReviewLoop(event.PullRequest.HTMLURL)
+	if loop != nil {
+		switch loop.Phase {
+		case kvstore.ReviewPhaseAwaitingReview:
+			// AI reviews in awaiting_review drive CodeRabbit gate + fix iterations.
+			if reviewerType == reviewerTypeAIBot {
+				if err := p.handleAIReview(loop, event.Review, event.PullRequest); err != nil {
+					p.API.LogError("Failed to handle AI review",
+						"error", err.Error(),
+						"review_loop_id", loop.ID,
+					)
+				}
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+		case kvstore.ReviewPhaseHumanReview:
+			// Human approval is terminal; human commented/changes_requested now
+			// trigger another cursor_fixing iteration.
+			if reviewerType == reviewerTypeHuman {
+				if strings.EqualFold(event.Review.State, reviewStateApproved) {
+					if err := p.handleHumanReviewApproval(loop, event.Review.User.Login); err != nil {
+						p.API.LogError("Failed to handle human review approval",
+							"error", err.Error(),
+							"review_loop_id", loop.ID,
+						)
+					}
+				} else if strings.EqualFold(event.Review.State, reviewStateCommented) ||
+					strings.EqualFold(event.Review.State, reviewStateChangesRequested) {
+					if err := p.handleHumanReviewFeedback(loop, event.Review, event.PullRequest); err != nil {
+						p.API.LogError("Failed to handle human review feedback",
+							"error", err.Error(),
+							"review_loop_id", loop.ID,
+						)
+					}
+				}
+			}
+		}
+	}
+
+	// --- Existing: Look up the agent and post notification ---
 	agent := p.findAgentForPR(event.PullRequest)
 	if agent == nil {
 		p.API.LogDebug("No agent found for reviewed PR", "pr_url", event.PullRequest.HTMLURL)
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+
+	// Backfill PrURL if empty (agent may have finished before PR was linked).
+	if agent.PrURL == "" && event.PullRequest.HTMLURL != "" {
+		agent.PrURL = event.PullRequest.HTMLURL
+		agent.UpdatedAt = time.Now().UnixMilli()
+		_ = p.kvstore.SaveAgent(agent)
+		p.publishAgentStatusChange(agent)
 	}
 
 	reviewer := event.Review.User.Login
@@ -310,7 +470,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 			TitleLink: reviewURL,
 		}
 	case reviewStateChangesRequested:
-		bodyText := truncateText(event.Review.Body, 200)
+		bodyText := truncateText(sanitizeReviewBodyForMattermost(event.Review.Body), 200)
 		reviewAttachment = &model.SlackAttachment{
 			Color:     "#D24B4E", // red (changes requested)
 			Title:     fmt.Sprintf("%s: %s requested changes", prTitle, reviewer),
@@ -318,7 +478,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 			Text:      bodyText,
 		}
 	case reviewStateCommented:
-		bodyText := truncateText(event.Review.Body, 200)
+		bodyText := truncateText(sanitizeReviewBodyForMattermost(event.Review.Body), 200)
 		if bodyText == "" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -397,6 +557,37 @@ func (p *Plugin) swapReaction(postID, removeEmoji, addEmoji string) {
 	}
 	p.removeReaction(postID, removeEmoji)
 	p.addReaction(postID, addEmoji)
+}
+
+// sanitizeReviewBodyForMattermost converts common HTML tags (from tools like
+// CodeRabbit) into Markdown equivalents suitable for Mattermost posts.
+func sanitizeReviewBodyForMattermost(body string) string {
+	// Remove <details> and </details> tags.
+	body = regexp.MustCompile(`(?i)</?details>`).ReplaceAllString(body, "")
+
+	// Convert <summary>text</summary> to **text**.
+	body = regexp.MustCompile(`(?i)<summary>(.*?)</summary>`).ReplaceAllString(body, "**$1**")
+
+	// Convert <blockquote>text</blockquote> to > quoted lines.
+	body = regexp.MustCompile(`(?is)<blockquote>(.*?)</blockquote>`).ReplaceAllStringFunc(body, func(match string) string {
+		inner := regexp.MustCompile(`(?is)<blockquote>(.*?)</blockquote>`).FindStringSubmatch(match)
+		if len(inner) > 1 {
+			lines := strings.Split(strings.TrimSpace(inner[1]), "\n")
+			for i, l := range lines {
+				lines[i] = "> " + strings.TrimSpace(l)
+			}
+			return strings.Join(lines, "\n")
+		}
+		return match
+	})
+
+	// Strip remaining HTML tags.
+	body = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(body, "")
+
+	// Clean up excessive blank lines.
+	body = regexp.MustCompile(`\n{3,}`).ReplaceAllString(body, "\n\n")
+
+	return strings.TrimSpace(body)
 }
 
 // truncateText truncates a string to maxLen characters, appending "..." if truncated.

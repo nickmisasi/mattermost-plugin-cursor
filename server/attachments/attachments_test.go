@@ -127,7 +127,7 @@ func TestBuildRunningAttachment(t *testing.T) {
 func TestBuildFinishedAttachment(t *testing.T) {
 	t.Run("with PR URL", func(t *testing.T) {
 		prURL := "https://github.com/org/repo/pull/42"
-		att := BuildFinishedAttachment("a1", "org/repo", "main", "claude-sonnet", "Fixed the bug", prURL)
+		att := BuildFinishedAttachment("a1", "org/repo", "main", "claude-sonnet", "Fixed the bug", prURL, "cursor/fix-login")
 
 		assert.Equal(t, ColorGreen, att.Color)
 		assert.Equal(t, "Agent finished!", att.Title)
@@ -142,14 +142,19 @@ func TestBuildFinishedAttachment(t *testing.T) {
 		assert.Contains(t, att.Text, "[View PR](https://github.com/org/repo/pull/42)")
 		assert.Contains(t, att.Text, "[Open in Cursor](https://cursor.com/agents/a1)")
 		assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
+		// When PR URL is present, no "No pull request" note should appear.
+		assert.NotContains(t, att.Text, "No pull request")
 	})
 
-	t.Run("without PR URL", func(t *testing.T) {
-		att := BuildFinishedAttachment("a1", "org/repo", "main", "", "Done", "")
+	t.Run("without PR URL but with target branch", func(t *testing.T) {
+		att := BuildFinishedAttachment("a1", "org/repo", "main", "", "Done", "", "cursor/fix-login")
 
 		assert.Equal(t, ColorGreen, att.Color)
 		assert.Equal(t, "Agent finished!", att.Title)
 		assert.Contains(t, att.Text, "Done")
+		assert.Contains(t, att.Text, "No pull request was created.")
+		assert.Contains(t, att.Text, "`cursor/fix-login`")
+		assert.Contains(t, att.Text, "create a PR manually")
 		require.Len(t, att.Fields, 2) // Repo and Branch, no Model
 		assert.Empty(t, att.Actions)
 		assert.Empty(t, att.Footer)
@@ -158,10 +163,19 @@ func TestBuildFinishedAttachment(t *testing.T) {
 		assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
 	})
 
+	t.Run("without PR URL and without target branch", func(t *testing.T) {
+		att := BuildFinishedAttachment("a1", "org/repo", "main", "", "Done", "", "")
+
+		assert.Contains(t, att.Text, "No pull request was created.")
+		assert.NotContains(t, att.Text, "branch")
+		assert.NotContains(t, att.Text, "View PR")
+	})
+
 	t.Run("empty summary", func(t *testing.T) {
-		att := BuildFinishedAttachment("a1", "", "", "", "", "")
+		att := BuildFinishedAttachment("a1", "", "", "", "", "", "")
 
 		assert.Contains(t, att.Text, "[Open in Cursor]")
+		assert.Contains(t, att.Text, "No pull request was created.")
 		assert.Empty(t, att.Fields)
 		assert.Empty(t, att.Actions)
 		assert.Empty(t, att.Footer)
@@ -407,4 +421,289 @@ func TestBuildImplementerLaunchAttachment(t *testing.T) {
 	assert.Contains(t, att.Text, "[Open in Cursor](https://cursor.com/agents/a1)")
 	assert.Contains(t, att.Text, "[Open in Web](https://cursor.com/agents/a1)")
 	assert.Empty(t, att.Actions)
+}
+
+// --- Phase 4: Review loop UX attachment tests ---
+
+func TestReviewStatusLine(t *testing.T) {
+	tests := []struct {
+		name        string
+		phase       string
+		iteration   int
+		contains    []string
+		notContains []string
+	}{
+		{
+			name:      "requesting_review",
+			phase:     "requesting_review",
+			iteration: 1,
+			contains:  []string{"Requesting reviewers"},
+		},
+		{
+			name:        "awaiting_review iteration 1 hides count",
+			phase:       "awaiting_review",
+			iteration:   1,
+			contains:    []string{"Waiting for CodeRabbit"},
+			notContains: []string{"iteration"},
+		},
+		{
+			name:      "awaiting_review iteration 3 shows count",
+			phase:     "awaiting_review",
+			iteration: 3,
+			contains:  []string{"Waiting for CodeRabbit", "iteration 3"},
+		},
+		{
+			name:        "cursor_fixing iteration 1 hides count",
+			phase:       "cursor_fixing",
+			iteration:   1,
+			contains:    []string{"Cursor fixing feedback"},
+			notContains: []string{"iteration"},
+		},
+		{
+			name:      "cursor_fixing iteration 2 shows count",
+			phase:     "cursor_fixing",
+			iteration: 2,
+			contains:  []string{"Cursor fixing feedback", "iteration 2"},
+		},
+		{
+			name:      "approved always shows iteration count",
+			phase:     "approved",
+			iteration: 1,
+			contains:  []string{"Approved by CodeRabbit", "1 iteration"},
+		},
+		{
+			name:      "approved multi-iteration",
+			phase:     "approved",
+			iteration: 4,
+			contains:  []string{"Approved by CodeRabbit", "4 iteration"},
+		},
+		{
+			name:      "human_review",
+			phase:     "human_review",
+			iteration: 1,
+			contains:  []string{"Waiting for human reviewer"},
+		},
+		{
+			name:      "complete",
+			phase:     "complete",
+			iteration: 1,
+			contains:  []string{"Complete"},
+		},
+		{
+			name:      "max_iterations",
+			phase:     "max_iterations",
+			iteration: 5,
+			contains:  []string{"Max iterations", "manual review"},
+		},
+		{
+			name:      "failed",
+			phase:     "failed",
+			iteration: 1,
+			contains:  []string{"Error", "check logs"},
+		},
+		{
+			name:      "unknown phase",
+			phase:     "something_new",
+			iteration: 1,
+			contains:  []string{"something_new"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := reviewStatusLine(tt.phase, tt.iteration)
+			for _, s := range tt.contains {
+				assert.Contains(t, result, s)
+			}
+			for _, s := range tt.notContains {
+				assert.NotContains(t, result, s)
+			}
+		})
+	}
+}
+
+func TestBuildFinishedWithReviewStatusAttachment(t *testing.T) {
+	t.Run("active loop phase shows blue color and status line", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "org/repo", "main", "claude-sonnet", "Fixed the bug",
+			"https://github.com/org/repo/pull/42",
+			"awaiting_review", 2,
+		)
+
+		assert.Equal(t, ColorBlue, att.Color)
+		assert.Equal(t, "Agent finished!", att.Title)
+		assert.Contains(t, att.Text, "Fixed the bug")
+		assert.Contains(t, att.Text, "[View PR](https://github.com/org/repo/pull/42)")
+		assert.Contains(t, att.Text, "[Open in Cursor]")
+		assert.Contains(t, att.Text, "---")
+		assert.Contains(t, att.Text, "Waiting for CodeRabbit")
+		assert.Contains(t, att.Text, "iteration 2")
+		require.Len(t, att.Fields, 3)
+	})
+
+	t.Run("approved phase shows green color", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "org/repo", "main", "", "",
+			"https://github.com/org/repo/pull/42",
+			"approved", 3,
+		)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Contains(t, att.Text, "Approved by CodeRabbit")
+		assert.Contains(t, att.Text, "3 iteration")
+	})
+
+	t.Run("max_iterations shows grey color", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "org/repo", "main", "", "",
+			"",
+			"max_iterations", 5,
+		)
+
+		assert.Equal(t, ColorGrey, att.Color)
+		assert.Contains(t, att.Text, "Max iterations")
+	})
+
+	t.Run("failed shows red color", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "", "", "", "",
+			"",
+			"failed", 1,
+		)
+
+		assert.Equal(t, ColorRed, att.Color)
+		assert.Contains(t, att.Text, "Error")
+	})
+
+	t.Run("requesting_review shows blue", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "", "", "", "",
+			"",
+			"requesting_review", 1,
+		)
+
+		assert.Equal(t, ColorBlue, att.Color)
+		assert.Contains(t, att.Text, "Requesting reviewers")
+	})
+
+	t.Run("cursor_fixing shows blue", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "", "", "", "",
+			"",
+			"cursor_fixing", 1,
+		)
+
+		assert.Equal(t, ColorBlue, att.Color)
+		assert.Contains(t, att.Text, "Cursor fixing feedback")
+	})
+
+	t.Run("human_review keeps green", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "", "", "", "",
+			"https://github.com/org/repo/pull/1",
+			"human_review", 2,
+		)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Contains(t, att.Text, "Waiting for human reviewer")
+	})
+
+	t.Run("no summary, no PR URL", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "", "", "", "",
+			"",
+			"awaiting_review", 1,
+		)
+
+		// Should still have links and status line
+		assert.Contains(t, att.Text, "[Open in Cursor]")
+		assert.Contains(t, att.Text, "Waiting for CodeRabbit")
+		assert.Empty(t, att.Fields)
+	})
+
+	t.Run("with summary and PR URL", func(t *testing.T) {
+		att := BuildFinishedWithReviewStatusAttachment(
+			"a1", "org/repo", "main", "auto",
+			"Implemented the feature",
+			"https://github.com/org/repo/pull/99",
+			"cursor_fixing", 3,
+		)
+
+		// Verify ordering: summary, links, separator, status
+		assert.Contains(t, att.Text, "Implemented the feature")
+		assert.Contains(t, att.Text, "[View PR]")
+		assert.Contains(t, att.Text, "---")
+		assert.Contains(t, att.Text, "Cursor fixing feedback")
+		assert.Contains(t, att.Text, "iteration 3")
+	})
+}
+
+func TestBuildReviewApprovedAttachment(t *testing.T) {
+	t.Run("single iteration", func(t *testing.T) {
+		att := BuildReviewApprovedAttachment("https://github.com/org/repo/pull/42", 1)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Equal(t, "CodeRabbit approved the PR!", att.Title)
+		assert.NotContains(t, att.Title, "iteration")
+		assert.Contains(t, att.Text, "[View PR](https://github.com/org/repo/pull/42)")
+		assert.Empty(t, att.Fields)
+		assert.Empty(t, att.Actions)
+	})
+
+	t.Run("multiple iterations", func(t *testing.T) {
+		att := BuildReviewApprovedAttachment("https://github.com/org/repo/pull/42", 3)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Contains(t, att.Title, "3 iterations")
+		assert.Contains(t, att.Text, "[View PR]")
+	})
+
+	t.Run("no PR URL", func(t *testing.T) {
+		att := BuildReviewApprovedAttachment("", 2)
+
+		assert.Equal(t, ColorGreen, att.Color)
+		assert.Contains(t, att.Title, "approved")
+		assert.Empty(t, att.Text)
+	})
+}
+
+func TestBuildMaxIterationsAttachment(t *testing.T) {
+	t.Run("with PR URL", func(t *testing.T) {
+		att := BuildMaxIterationsAttachment("https://github.com/org/repo/pull/42", 5)
+
+		assert.Equal(t, ColorGrey, att.Color)
+		assert.Contains(t, att.Title, "5 iterations")
+		assert.Contains(t, att.Text, "[View PR](https://github.com/org/repo/pull/42)")
+		assert.Contains(t, att.Text, "manual review")
+		assert.Empty(t, att.Fields)
+		assert.Empty(t, att.Actions)
+	})
+
+	t.Run("without PR URL", func(t *testing.T) {
+		att := BuildMaxIterationsAttachment("", 3)
+
+		assert.Equal(t, ColorGrey, att.Color)
+		assert.Contains(t, att.Title, "3 iterations")
+		assert.Contains(t, att.Text, "Manual review")
+		assert.NotContains(t, att.Text, "[View PR]")
+	})
+}
+
+func TestBuildReviewFailedAttachment(t *testing.T) {
+	t.Run("with detail", func(t *testing.T) {
+		att := BuildReviewFailedAttachment("GitHub API rate limited")
+
+		assert.Equal(t, ColorRed, att.Color)
+		assert.Equal(t, "AI review loop failed.", att.Title)
+		assert.Equal(t, "GitHub API rate limited", att.Text)
+		assert.Empty(t, att.Fields)
+		assert.Empty(t, att.Actions)
+	})
+
+	t.Run("empty detail falls back to generic message", func(t *testing.T) {
+		att := BuildReviewFailedAttachment("")
+
+		assert.Equal(t, ColorRed, att.Color)
+		assert.Contains(t, att.Text, "Check plugin logs")
+	})
 }

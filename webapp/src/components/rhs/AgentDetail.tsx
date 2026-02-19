@@ -4,9 +4,9 @@ import {useHistory} from 'react-router-dom';
 
 import type {GlobalState} from '@mattermost/types/store';
 
-import {addFollowup, cancelAgent, fetchWorkflow} from '../../actions';
-import {getWorkflowForAgent} from '../../selectors';
-import type {Agent} from '../../types';
+import {addFollowup, cancelAgent, fetchReviewLoop, fetchWorkflow} from '../../actions';
+import {getReviewLoopForAgent, getWorkflowForAgent} from '../../selectors';
+import type {Agent, ReviewLoopPhase} from '../../types';
 import ExternalLink from '../common/ExternalLink';
 import PhaseBadge from '../common/PhaseBadge';
 import PhaseProgress from '../common/PhaseProgress';
@@ -17,7 +17,28 @@ interface Props {
     onBack: () => void;
 }
 
-function getStatusBarClass(status: string, workflowPhase?: string): string {
+function getStatusBarClass(status: string, workflowPhase?: string, reviewLoopPhase?: string): string {
+    // Review loop phases take priority for status bar color.
+    if (reviewLoopPhase) {
+        switch (reviewLoopPhase) {
+        case 'requesting_review':
+        case 'awaiting_review':
+        case 'cursor_fixing':
+            return 'cursor-agent-detail-status-bar--blue';
+        case 'approved':
+        case 'complete':
+            return 'cursor-agent-detail-status-bar--green';
+        case 'human_review':
+            return 'cursor-agent-detail-status-bar--yellow';
+        case 'max_iterations':
+            return 'cursor-agent-detail-status-bar--grey';
+        case 'failed':
+            return 'cursor-agent-detail-status-bar--red';
+        default:
+            break;
+        }
+    }
+
     // If in a workflow, use phase-based coloring
     if (workflowPhase) {
         switch (workflowPhase) {
@@ -52,6 +73,91 @@ function getStatusBarClass(status: string, workflowPhase?: string): string {
     }
 }
 
+function getElapsedTime(timestamp: number): string {
+    const diffMs = Date.now() - timestamp;
+    const minutes = Math.floor(diffMs / 60000);
+    if (minutes < 1) {
+        return 'just now';
+    }
+    if (minutes < 60) {
+        return `${minutes}m ago`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+        return `${hours}h ago`;
+    }
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+}
+
+function getReviewLoopPhaseLabel(phase: string): string {
+    switch (phase) {
+    case 'requesting_review':
+        return 'Review requested';
+    case 'awaiting_review':
+        return 'Awaiting AI review';
+    case 'cursor_fixing':
+        return 'Cursor fixing feedback';
+    case 'approved':
+        return 'AI approved';
+    case 'human_review':
+        return 'Human review';
+    case 'complete':
+        return 'Review complete';
+    case 'max_iterations':
+        return 'Max iterations reached';
+    case 'failed':
+        return 'Review failed';
+    default:
+        return phase;
+    }
+}
+
+const ReviewLoopWhosUp: React.FC<{phase: ReviewLoopPhase}> = ({phase}) => {
+    let label: string;
+    let className: string;
+
+    switch (phase) {
+    case 'requesting_review':
+        label = 'Requesting reviewers...';
+        className = 'cursor-review-loop-whosup--active';
+        break;
+    case 'awaiting_review':
+        label = 'CodeRabbit is reviewing';
+        className = 'cursor-review-loop-whosup--active';
+        break;
+    case 'cursor_fixing':
+        label = 'Cursor is fixing feedback';
+        className = 'cursor-review-loop-whosup--active';
+        break;
+    case 'approved':
+        label = 'Approved by CodeRabbit';
+        className = 'cursor-review-loop-whosup--approved';
+        break;
+    case 'human_review':
+        label = 'Waiting for human reviewer';
+        className = 'cursor-review-loop-whosup--waiting';
+        break;
+    case 'complete':
+        label = 'Review complete';
+        className = 'cursor-review-loop-whosup--complete';
+        break;
+    case 'max_iterations':
+        label = 'Needs manual review';
+        className = 'cursor-review-loop-whosup--warning';
+        break;
+    case 'failed':
+        label = 'Review failed';
+        className = 'cursor-review-loop-whosup--failed';
+        break;
+    default:
+        label = phase;
+        className = '';
+    }
+
+    return <span className={`cursor-review-loop-whosup-label ${className}`}>{label}</span>;
+};
+
 const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
     const dispatch = useDispatch();
     const history = useHistory();
@@ -59,6 +165,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
     const isActive = agent.status === 'RUNNING' || agent.status === 'CREATING';
     const isAborted = agent.status === 'STOPPED' || agent.status === 'FAILED';
     const workflow = useSelector((state: GlobalState) => getWorkflowForAgent(state, agent.id));
+    const reviewLoop = useSelector((state: GlobalState) => getReviewLoopForAgent(state, agent.id));
 
     // Fetch full workflow details on mount if we have a workflow_id but no workflow in state
     useEffect(() => {
@@ -66,6 +173,13 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
             dispatch(fetchWorkflow(agent.workflow_id) as any);
         }
     }, [agent.workflow_id, workflow, dispatch]);
+
+    // Fetch full review loop details on mount if we have a review_loop_id but no review loop in state.
+    useEffect(() => {
+        if (agent.review_loop_id && !reviewLoop) {
+            dispatch(fetchReviewLoop(agent.review_loop_id) as any);
+        }
+    }, [agent.review_loop_id, reviewLoop, dispatch]);
 
     const handleFollowup = () => {
         if (followupText.trim() && agent.status === 'RUNNING') {
@@ -82,7 +196,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
     return (
         <div className='cursor-agent-detail'>
-            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status, workflow?.phase)}`}/>
+            <div className={`cursor-agent-detail-status-bar ${getStatusBarClass(agent.status, workflow?.phase, reviewLoop?.phase)}`}/>
             <div className='cursor-agent-detail-content'>
                 <div className='cursor-agent-detail-back'>
                     <button
@@ -99,6 +213,8 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                         planIterationCount={workflow.plan_iteration_count}
                         skipContextReview={workflow.skip_context_review}
                         skipPlanLoop={workflow.skip_plan_loop}
+                        reviewLoopPhase={reviewLoop?.phase}
+                        reviewLoopIteration={reviewLoop?.iteration}
                     />
                 )}
 
@@ -106,6 +222,7 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                     <StatusBadge status={agent.status}/>
                     <span className='cursor-agent-detail-status-text'>{agent.status}</span>
                     {workflow && !(isAborted && workflow.phase !== 'rejected' && workflow.phase !== 'complete') && <PhaseBadge phase={workflow.phase}/>}
+                    {reviewLoop && <PhaseBadge phase={reviewLoop.phase}/>}
                 </div>
 
                 <div className='cursor-agent-detail-section'>
@@ -115,8 +232,15 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
                 {agent.branch && (
                     <div className='cursor-agent-detail-section'>
-                        <div className='cursor-agent-detail-label'>{'Branch'}</div>
+                        <div className='cursor-agent-detail-label'>{'Base Branch'}</div>
                         <div className='cursor-agent-detail-value'>{agent.branch}</div>
+                    </div>
+                )}
+
+                {agent.target_branch && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Created Branch'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.target_branch}</div>
                     </div>
                 )}
 
@@ -157,6 +281,57 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
                     <div className='cursor-agent-detail-section'>
                         <div className='cursor-agent-detail-label'>{'Summary'}</div>
                         <div className='cursor-agent-detail-value'>{agent.summary}</div>
+                    </div>
+                )}
+
+                {reviewLoop && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'AI Review'}</div>
+                        <div className='cursor-review-loop-section'>
+                            <div className='cursor-review-loop-whosup'>
+                                <ReviewLoopWhosUp phase={reviewLoop.phase}/>
+                            </div>
+                            {reviewLoop.iteration > 0 && (
+                                <div className='cursor-review-loop-iteration'>
+                                    {`Iteration ${reviewLoop.iteration}`}
+                                </div>
+                            )}
+                            {reviewLoop.pr_url && (
+                                <div className='cursor-review-loop-pr'>
+                                    <ExternalLink
+                                        href={reviewLoop.pr_url}
+                                        className='cursor-agent-card-link'
+                                    >
+                                        {'View PR'}
+                                    </ExternalLink>
+                                </div>
+                            )}
+                            {reviewLoop.history && reviewLoop.history.length > 0 && (
+                                <div className='cursor-review-loop-timeline'>
+                                    {reviewLoop.history.map((event, index) => (
+                                        <div
+                                            key={index}
+                                            className='cursor-review-loop-timeline-item'
+                                        >
+                                            <div className='cursor-review-loop-timeline-dot'/>
+                                            <div className='cursor-review-loop-timeline-content'>
+                                                <span className='cursor-review-loop-timeline-phase'>
+                                                    {getReviewLoopPhaseLabel(event.phase)}
+                                                </span>
+                                                {event.detail && (
+                                                    <span className='cursor-review-loop-timeline-detail'>
+                                                        {` -- ${event.detail}`}
+                                                    </span>
+                                                )}
+                                                <span className='cursor-review-loop-timeline-time'>
+                                                    {getElapsedTime(event.timestamp)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
 

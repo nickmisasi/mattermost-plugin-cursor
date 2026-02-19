@@ -21,6 +21,10 @@ const (
 	prefixDelivery     = "ghdelivery:"   // Idempotency key for GitHub webhook deliveries
 	prefixHITL         = "hitl:"         // HITL workflow records
 	prefixHITLAgent    = "hitlagent:"    // Reverse index: Cursor agent ID -> workflow ID
+	prefixReviewLoop   = "reviewloop:"   // ReviewLoop records
+	prefixRLByPR       = "rlbypr:"       // PR URL -> ReviewLoop ID index
+	prefixRLByAgent      = "rlbyagent:"    // Agent record ID -> ReviewLoop ID index
+	prefixFinishedWithPR = "finishedpr:"   // Index for FINISHED agents with PrURL (janitor)
 )
 
 // hitlThreadPrefix is prepended to workflow IDs when stored in thread mappings
@@ -90,6 +94,13 @@ func (s *store) SaveAgent(record *AgentRecord) error {
 		_, _ = s.client.KV.Set(prefixBranchIdx+record.TargetBranch, record.CursorAgentID)
 	}
 
+	// Maintain finished-with-PR index for janitor sweep.
+	if record.PrURL != "" && !isActiveStatus(record.Status) {
+		_, _ = s.client.KV.Set(prefixFinishedWithPR+record.CursorAgentID, record.CursorAgentID)
+	} else {
+		_ = s.client.KV.Delete(prefixFinishedWithPR + record.CursorAgentID)
+	}
+
 	return nil
 }
 
@@ -102,6 +113,7 @@ func (s *store) DeleteAgent(cursorAgentID string) error {
 		return errors.Wrap(err, "failed to delete agent record")
 	}
 	_ = s.client.KV.Delete(prefixAgentIdx + cursorAgentID)
+	_ = s.client.KV.Delete(prefixFinishedWithPR + cursorAgentID)
 
 	if record != nil && record.UserID != "" {
 		_ = s.client.KV.Delete(prefixUserAgentIdx + record.UserID + ":" + cursorAgentID)
@@ -326,4 +338,109 @@ func (s *store) DeleteAgentWorkflow(cursorAgentID string) error {
 		return errors.Wrap(err, "failed to delete agent-to-workflow mapping")
 	}
 	return nil
+}
+
+func (s *store) GetReviewLoop(reviewLoopID string) (*ReviewLoop, error) {
+	var loop ReviewLoop
+	err := s.client.KV.Get(prefixReviewLoop+reviewLoopID, &loop)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get review loop")
+	}
+	if loop.ID == "" {
+		return nil, nil // Not found
+	}
+	return &loop, nil
+}
+
+func (s *store) SaveReviewLoop(loop *ReviewLoop) error {
+	_, err := s.client.KV.Set(prefixReviewLoop+loop.ID, loop)
+	if err != nil {
+		return errors.Wrap(err, "failed to save review loop")
+	}
+
+	// Maintain PR URL -> ReviewLoop ID index.
+	if loop.PRURL != "" {
+		_, err = s.client.KV.Set(prefixRLByPR+normalizeURL(loop.PRURL), loop.ID)
+		if err != nil {
+			return errors.Wrap(err, "failed to save review loop PR URL index")
+		}
+	}
+
+	// Maintain Agent Record ID -> ReviewLoop ID index.
+	if loop.AgentRecordID != "" {
+		_, err = s.client.KV.Set(prefixRLByAgent+loop.AgentRecordID, loop.ID)
+		if err != nil {
+			return errors.Wrap(err, "failed to save review loop agent index")
+		}
+	}
+
+	// Remove from janitor index since a loop now exists for this agent.
+	if loop.AgentRecordID != "" {
+		_ = s.client.KV.Delete(prefixFinishedWithPR + loop.AgentRecordID)
+	}
+
+	return nil
+}
+
+func (s *store) DeleteReviewLoop(reviewLoopID string) error {
+	// Get record first to clean up indexes.
+	loop, _ := s.GetReviewLoop(reviewLoopID)
+
+	err := s.client.KV.Delete(prefixReviewLoop + reviewLoopID)
+	if err != nil {
+		return errors.Wrap(err, "failed to delete review loop")
+	}
+
+	if loop != nil {
+		if loop.PRURL != "" {
+			_ = s.client.KV.Delete(prefixRLByPR + normalizeURL(loop.PRURL))
+		}
+		if loop.AgentRecordID != "" {
+			_ = s.client.KV.Delete(prefixRLByAgent + loop.AgentRecordID)
+		}
+	}
+
+	return nil
+}
+
+func (s *store) GetReviewLoopByPRURL(prURL string) (*ReviewLoop, error) {
+	var reviewLoopID string
+	err := s.client.KV.Get(prefixRLByPR+normalizeURL(prURL), &reviewLoopID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get review loop PR URL index")
+	}
+	if reviewLoopID == "" {
+		return nil, nil
+	}
+	return s.GetReviewLoop(reviewLoopID)
+}
+
+func (s *store) GetReviewLoopByAgent(agentRecordID string) (*ReviewLoop, error) {
+	var reviewLoopID string
+	err := s.client.KV.Get(prefixRLByAgent+agentRecordID, &reviewLoopID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get review loop agent index")
+	}
+	if reviewLoopID == "" {
+		return nil, nil
+	}
+	return s.GetReviewLoop(reviewLoopID)
+}
+
+func (s *store) GetAllFinishedAgentsWithPR() ([]*AgentRecord, error) {
+	keys, err := s.client.KV.ListKeys(0, 1000, pluginapi.WithPrefix(prefixFinishedWithPR))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to list finished-with-PR keys")
+	}
+	var agents []*AgentRecord
+	for _, key := range keys {
+		agentID := strings.TrimPrefix(key, prefixFinishedWithPR)
+		record, err := s.GetAgent(agentID)
+		if err != nil || record == nil {
+			_ = s.client.KV.Delete(key) // Clean up orphaned index entry.
+			continue
+		}
+		agents = append(agents, record)
+	}
+	return agents, nil
 }

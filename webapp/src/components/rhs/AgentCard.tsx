@@ -59,6 +59,16 @@ const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) =>
                 {agent.workflow_phase && !(isAborted && agent.workflow_phase !== 'rejected' && agent.workflow_phase !== 'complete') && (
                     <PhaseBadge phase={agent.workflow_phase}/>
                 )}
+                {agent.review_loop_phase && (
+                    <>
+                        <PhaseBadge phase={agent.review_loop_phase}/>
+                        {agent.review_loop_iteration && agent.review_loop_iteration > 1 && (
+                            <span className='cursor-agent-card-badge'>
+                                {`iter ${agent.review_loop_iteration}`}
+                            </span>
+                        )}
+                    </>
+                )}
                 <span className='cursor-agent-card-time'>{elapsed}</span>
             </div>
             {(agent.branch || agent.model) && (

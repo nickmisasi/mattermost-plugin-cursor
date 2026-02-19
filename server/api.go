@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -42,6 +44,9 @@ func (p *Plugin) initRouter() *mux.Router {
 
 	// Phase 5: Workflow detail endpoint for the webapp.
 	authedRouter.HandleFunc("/workflows/{id}", p.handleGetWorkflow).Methods(http.MethodGet)
+
+	// Phase 5: Review loop detail endpoint for the webapp.
+	authedRouter.HandleFunc("/review-loops/{id}", p.handleGetReviewLoop).Methods(http.MethodGet)
 
 	// Admin-only routes.
 	adminRouter := authedRouter.PathPrefix("/admin").Subrouter()
@@ -174,6 +179,7 @@ type AgentResponse struct {
 	Status             string `json:"status"`
 	Repository         string `json:"repository"`
 	Branch             string `json:"branch"`
+	TargetBranch       string `json:"target_branch,omitempty"`
 	Prompt             string `json:"prompt"`
 	Description        string `json:"description"`
 	PrURL              string `json:"pr_url"`
@@ -189,6 +195,11 @@ type AgentResponse struct {
 	WorkflowID         string `json:"workflow_id,omitempty"`
 	WorkflowPhase      string `json:"workflow_phase,omitempty"`
 	PlanIterationCount int    `json:"plan_iteration_count,omitempty"`
+
+	// Review loop fields (populated when agent has an active review loop)
+	ReviewLoopID        string `json:"review_loop_id,omitempty"`
+	ReviewLoopPhase     string `json:"review_loop_phase,omitempty"`
+	ReviewLoopIteration int    `json:"review_loop_iteration,omitempty"`
 }
 
 // AgentsListResponse is the response from GET /api/v1/agents.
@@ -227,22 +238,23 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 		}
 
 		agentResp := AgentResponse{
-			ID:          a.CursorAgentID,
-			Status:      a.Status,
-			Repository:  a.Repository,
-			Branch:      a.Branch,
-			PrURL:       a.PrURL,
-			CursorURL:   fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
-			ChannelID:   a.ChannelID,
-			PostID:      a.PostID,
-			RootPostID:  a.PostID,
-			Prompt:      a.Prompt,
-			Description: a.Description,
-			Model:       a.Model,
-			Summary:     a.Summary,
-			CreatedAt:   a.CreatedAt,
-			UpdatedAt:   a.UpdatedAt,
-			Archived:    a.Archived,
+			ID:           a.CursorAgentID,
+			Status:       a.Status,
+			Repository:   a.Repository,
+			Branch:       a.Branch,
+			TargetBranch: a.TargetBranch,
+			PrURL:        a.PrURL,
+			CursorURL:    fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
+			ChannelID:    a.ChannelID,
+			PostID:       a.PostID,
+			RootPostID:   a.PostID,
+			Prompt:       a.Prompt,
+			Description:  a.Description,
+			Model:        a.Model,
+			Summary:      a.Summary,
+			CreatedAt:    a.CreatedAt,
+			UpdatedAt:    a.UpdatedAt,
+			Archived:     a.Archived,
 		}
 
 		// Look up workflow association for HITL-aware agents.
@@ -252,6 +264,13 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 				agentResp.WorkflowPhase = wf.Phase
 				agentResp.PlanIterationCount = wf.PlanIterationCount
 			}
+		}
+
+		// Look up review loop association.
+		if rl, rlErr := p.kvstore.GetReviewLoopByAgent(a.CursorAgentID); rlErr == nil && rl != nil {
+			agentResp.ReviewLoopID = rl.ID
+			agentResp.ReviewLoopPhase = rl.Phase
+			agentResp.ReviewLoopIteration = rl.Iteration
 		}
 
 		resp.Agents = append(resp.Agents, agentResp)
@@ -287,6 +306,9 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 				if remoteAgent.Target.PrURL != "" {
 					record.PrURL = remoteAgent.Target.PrURL
 				}
+				if remoteAgent.Target.BranchName != "" {
+					record.TargetBranch = remoteAgent.Target.BranchName
+				}
 				if remoteAgent.Summary != "" {
 					record.Summary = remoteAgent.Summary
 				}
@@ -296,23 +318,55 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// GitHub freshness check: if PrURL is still empty but we have a TargetBranch,
+	// query GitHub for a matching PR and backfill.
+	if record.PrURL == "" && record.TargetBranch != "" {
+		ghClient := p.getGitHubClient()
+		if ghClient != nil {
+			parts := strings.SplitN(record.Repository, "/", 2)
+			if len(parts) == 2 {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel2()
+				pr, ghErr := ghClient.GetPullRequestByBranch(ctx2, parts[0], parts[1], record.TargetBranch)
+				if ghErr == nil && pr != nil {
+					record.PrURL = pr.GetHTMLURL()
+					record.UpdatedAt = time.Now().UnixMilli()
+					_ = p.kvstore.SaveAgent(record)
+
+					// Bootstrap a review loop if applicable.
+					if cursor.AgentStatus(record.Status).IsTerminal() &&
+						p.getConfiguration().EnableAIReviewLoop {
+						_ = p.ensureReviewLoop(record.PrURL)
+					}
+				}
+			}
+		}
+	}
+
+	// If ?fresh=true, force review loop check even if PrURL exists.
+	wantFresh := r.URL.Query().Get("fresh") == "true"
+	if wantFresh && record.PrURL != "" && p.getGitHubClient() != nil {
+		_ = p.ensureReviewLoop(record.PrURL)
+	}
+
 	resp := AgentResponse{
-		ID:          record.CursorAgentID,
-		Status:      record.Status,
-		Repository:  record.Repository,
-		Branch:      record.Branch,
-		PrURL:       record.PrURL,
-		CursorURL:   fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
-		ChannelID:   record.ChannelID,
-		PostID:      record.PostID,
-		RootPostID:  record.PostID,
-		Prompt:      record.Prompt,
-		Description: record.Description,
-		Model:       record.Model,
-		Summary:     record.Summary,
-		CreatedAt:   record.CreatedAt,
-		UpdatedAt:   record.UpdatedAt,
-		Archived:    record.Archived,
+		ID:           record.CursorAgentID,
+		Status:       record.Status,
+		Repository:   record.Repository,
+		Branch:       record.Branch,
+		TargetBranch: record.TargetBranch,
+		PrURL:        record.PrURL,
+		CursorURL:    fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
+		ChannelID:    record.ChannelID,
+		PostID:       record.PostID,
+		RootPostID:   record.PostID,
+		Prompt:       record.Prompt,
+		Description:  record.Description,
+		Model:        record.Model,
+		Summary:      record.Summary,
+		CreatedAt:    record.CreatedAt,
+		UpdatedAt:    record.UpdatedAt,
+		Archived:     record.Archived,
 	}
 
 	// Look up workflow association.
@@ -322,6 +376,13 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 			resp.WorkflowPhase = wf.Phase
 			resp.PlanIterationCount = wf.PlanIterationCount
 		}
+	}
+
+	// Look up review loop association.
+	if rl, rlErr := p.kvstore.GetReviewLoopByAgent(record.CursorAgentID); rlErr == nil && rl != nil {
+		resp.ReviewLoopID = rl.ID
+		resp.ReviewLoopPhase = rl.Phase
+		resp.ReviewLoopIteration = rl.Iteration
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -492,9 +553,16 @@ func (p *Plugin) handleArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if _, apiErr := cursorClient.StopAgent(ctx, agentID); apiErr != nil {
-			p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
-			http.Error(w, "Failed to stop agent", http.StatusInternalServerError)
-			return
+			// 409 Conflict (already deleted) or 400 (no longer running/available) mean
+			// the agent is already gone in Cursor Cloud -- safe to proceed with local archive.
+			var cursorErr *cursor.APIError
+			if errors.As(apiErr, &cursorErr) && (cursorErr.StatusCode == http.StatusConflict || cursorErr.StatusCode == http.StatusBadRequest) {
+				p.API.LogWarn("Agent already stopped/deleted in Cursor Cloud, proceeding with archive", "agentID", agentID)
+			} else {
+				p.API.LogError("Failed to stop agent before archiving", "agentID", agentID, "error", apiErr.Error())
+				http.Error(w, "Failed to stop agent", http.StatusInternalServerError)
+				return
+			}
 		}
 		record.Status = string(cursor.AgentStatusStopped)
 	}
@@ -563,6 +631,80 @@ type WorkflowResponse struct {
 	SkipPlanLoop       bool   `json:"skip_plan_loop"`
 	CreatedAt          int64  `json:"created_at"`
 	UpdatedAt          int64  `json:"updated_at"`
+}
+
+// ReviewLoopResponse is the JSON representation of a review loop for the webapp.
+type ReviewLoopResponse struct {
+	ID            string                    `json:"id"`
+	AgentRecordID string                    `json:"agent_record_id"`
+	WorkflowID    string                    `json:"workflow_id,omitempty"`
+	UserID        string                    `json:"user_id"`
+	ChannelID     string                    `json:"channel_id"`
+	RootPostID    string                    `json:"root_post_id"`
+	TriggerPostID string                    `json:"trigger_post_id"`
+	PRURL         string                    `json:"pr_url"`
+	PRNumber      int                       `json:"pr_number"`
+	Repository    string                    `json:"repository"`
+	Phase         string                    `json:"phase"`
+	Iteration     int                       `json:"iteration"`
+	LastCommitSHA string                    `json:"last_commit_sha,omitempty"`
+	History       []ReviewLoopEventResponse `json:"history"`
+	CreatedAt     int64                     `json:"created_at"`
+	UpdatedAt     int64                     `json:"updated_at"`
+}
+
+// ReviewLoopEventResponse is the JSON representation of a review loop timeline event.
+type ReviewLoopEventResponse struct {
+	Phase     string `json:"phase"`
+	Timestamp int64  `json:"timestamp"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+func (p *Plugin) handleGetReviewLoop(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("Mattermost-User-ID")
+	reviewLoopID := mux.Vars(r)["id"]
+
+	loop, err := p.kvstore.GetReviewLoop(reviewLoopID)
+	if err != nil {
+		p.API.LogError("Failed to get review loop", "reviewLoopID", reviewLoopID, "error", err.Error())
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if loop == nil || loop.UserID != userID {
+		http.Error(w, "Review loop not found", http.StatusNotFound)
+		return
+	}
+
+	history := make([]ReviewLoopEventResponse, 0, len(loop.History))
+	for _, evt := range loop.History {
+		history = append(history, ReviewLoopEventResponse{
+			Phase:     evt.Phase,
+			Timestamp: evt.Timestamp,
+			Detail:    evt.Detail,
+		})
+	}
+
+	resp := ReviewLoopResponse{
+		ID:            loop.ID,
+		AgentRecordID: loop.AgentRecordID,
+		WorkflowID:    loop.WorkflowID,
+		UserID:        loop.UserID,
+		ChannelID:     loop.ChannelID,
+		RootPostID:    loop.RootPostID,
+		TriggerPostID: loop.TriggerPostID,
+		PRURL:         loop.PRURL,
+		PRNumber:      loop.PRNumber,
+		Repository:    loop.Repository,
+		Phase:         loop.Phase,
+		Iteration:     loop.Iteration,
+		LastCommitSHA: loop.LastCommitSHA,
+		History:       history,
+		CreatedAt:     loop.CreatedAt,
+		UpdatedAt:     loop.UpdatedAt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (p *Plugin) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {

@@ -40,6 +40,50 @@ func (p *Plugin) pollAgentStatuses() {
 		}
 		p.pollSingleAgent(record)
 	}
+
+	// Janitor sweep: reconcile GitHub-related state for finished agents.
+	p.janitorSweep()
+}
+
+// janitorSweep reconciles GitHub-related state for agents where webhooks
+// may have been missed. This is the BACKUP path -- webhooks are primary.
+// Called at the end of each poll cycle.
+func (p *Plugin) janitorSweep() {
+	config := p.getConfiguration()
+	if !config.EnableAIReviewLoop || p.getGitHubClient() == nil {
+		return
+	}
+
+	// Find agents that are FINISHED with PrURL but have no ReviewLoop.
+	// This catches cases where the PR opened webhook was missed.
+	agents, err := p.kvstore.GetAllFinishedAgentsWithPR()
+	if err != nil {
+		p.API.LogError("Janitor: failed to list finished agents", "error", err.Error())
+		return
+	}
+
+	for _, agent := range agents {
+		if agent.PrURL == "" {
+			continue
+		}
+
+		existing, _ := p.kvstore.GetReviewLoopByPRURL(agent.PrURL)
+		if existing != nil {
+			continue // Loop already exists; nothing to reconcile.
+		}
+
+		p.API.LogInfo("Janitor: bootstrapping missing review loop",
+			"agent_id", agent.CursorAgentID,
+			"pr_url", agent.PrURL,
+		)
+
+		if err := p.startReviewLoop(agent); err != nil {
+			p.API.LogError("Janitor: failed to start review loop",
+				"error", err.Error(),
+				"agent_id", agent.CursorAgentID,
+			)
+		}
+	}
 }
 
 // pollSingleAgent fetches the current status of a single agent and handles transitions.
@@ -156,25 +200,44 @@ func (p *Plugin) handleAgentFinished(record *kvstore.AgentRecord, agent *cursor.
 	p.removeReaction(record.TriggerPostID, "hourglass_flowing_sand")
 	p.addReaction(record.TriggerPostID, "white_check_mark")
 
+	// Use the branch name from the API response if available, fall back to the stored target branch.
+	targetBranch := agent.Target.BranchName
+	if targetBranch == "" {
+		targetBranch = record.TargetBranch
+	}
+
 	finishedAttachment := attachments.BuildFinishedAttachment(
 		record.CursorAgentID, record.Repository, record.Branch, record.Model,
-		agent.Summary, agent.Target.PrURL,
+		agent.Summary, agent.Target.PrURL, targetBranch,
 	)
 
 	// Step 2: Update the original bot reply post with the finished attachment.
 	p.updateBotReplyWithAttachment(record.BotReplyPostID, finishedAttachment)
 
 	// Step 3: Post a short text notification to trigger thread follow.
-	msg := "Agent finished!"
-	if agent.Target.PrURL != "" {
+	var msg string
+	switch {
+	case agent.Target.PrURL != "":
 		msg = fmt.Sprintf("Agent finished! [View PR](%s)", agent.Target.PrURL)
+	case targetBranch != "":
+		msg = fmt.Sprintf("Agent finished but no PR was created. Changes are on branch `%s`.", targetBranch)
+	default:
+		msg = "Agent finished but no PR was created. Check the agent output in Cursor for details."
 	}
 	p.postBotReplyToThread(record, msg)
 
-	// Step 4: Update record with PR URL.
+	// Step 4: Update record with PR URL and actual branch name from Cursor API.
 	if agent.Target.PrURL != "" {
 		record.PrURL = agent.Target.PrURL
 	}
+	if agent.Target.BranchName != "" && agent.Target.BranchName != record.TargetBranch {
+		record.TargetBranch = agent.Target.BranchName
+	}
+
+	// Step 5: Review loop is now started by the PR opened webhook (Phase 1).
+	// The janitor sweep below handles reconciliation if the webhook was missed.
+	// NOTE: We intentionally do NOT call startReviewLoop() here anymore.
+	// The webhook-primary architecture ensures the PR opened event drives this.
 }
 
 func (p *Plugin) handleAgentFailed(record *kvstore.AgentRecord, agent *cursor.Agent) {
@@ -289,12 +352,13 @@ func (p *Plugin) publishAgentStatusChange(record *kvstore.AgentRecord) {
 	p.API.PublishWebSocketEvent(
 		"agent_status_change",
 		map[string]any{
-			"agent_id":   record.CursorAgentID,
-			"status":     record.Status,
-			"pr_url":     record.PrURL,
-			"summary":    record.Summary,
-			"repository": record.Repository,
-			"updated_at": fmt.Sprintf("%d", record.UpdatedAt),
+			"agent_id":      record.CursorAgentID,
+			"status":        record.Status,
+			"pr_url":        record.PrURL,
+			"summary":       record.Summary,
+			"repository":    record.Repository,
+			"target_branch": record.TargetBranch,
+			"updated_at":    fmt.Sprintf("%d", record.UpdatedAt),
 		},
 		&model.WebsocketBroadcast{UserId: record.UserID},
 	)
@@ -339,16 +403,17 @@ func (p *Plugin) publishAgentCreated(record *kvstore.AgentRecord) {
 	p.API.PublishWebSocketEvent(
 		"agent_created",
 		map[string]any{
-			"agent_id":    record.CursorAgentID,
-			"status":      record.Status,
-			"repository":  record.Repository,
-			"branch":      record.Branch,
-			"prompt":      record.Prompt,
-			"description": record.Description,
-			"channel_id":  record.ChannelID,
-			"post_id":     record.PostID,
-			"cursor_url":  fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
-			"created_at":  fmt.Sprintf("%d", record.CreatedAt),
+			"agent_id":      record.CursorAgentID,
+			"status":        record.Status,
+			"repository":    record.Repository,
+			"branch":        record.Branch,
+			"target_branch": record.TargetBranch,
+			"prompt":        record.Prompt,
+			"description":   record.Description,
+			"channel_id":    record.ChannelID,
+			"post_id":       record.PostID,
+			"cursor_url":    fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
+			"created_at":    fmt.Sprintf("%d", record.CreatedAt),
 		},
 		&model.WebsocketBroadcast{UserId: record.UserID},
 	)

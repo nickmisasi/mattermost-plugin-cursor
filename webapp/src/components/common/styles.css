@@ -515,3 +515,149 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+
+/* --- Review Loop Phase Badges --- */
+
+.cursor-phase-rl-requesting {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--button-bg);
+    border: 1px solid var(--button-bg);
+}
+
+.cursor-phase-rl-awaiting {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--button-bg);
+    border: 1px solid var(--button-bg);
+}
+
+.cursor-phase-rl-fixing {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--away-indicator);
+    border: 1px solid var(--away-indicator);
+}
+
+.cursor-phase-rl-approved {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--online-indicator);
+    border: 1px solid var(--online-indicator);
+}
+
+.cursor-phase-rl-human {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--away-indicator);
+    border: 1px solid var(--away-indicator);
+}
+
+.cursor-phase-rl-maxiter {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--dnd-indicator);
+    border: 1px solid var(--dnd-indicator);
+}
+
+.cursor-phase-rl-failed {
+    background-color: rgba(var(--center-channel-color-rgb), 0.08);
+    color: var(--dnd-indicator);
+    border: 1px solid var(--dnd-indicator);
+}
+
+/* --- Review Loop Section in AgentDetail --- */
+
+.cursor-review-loop-section {
+    margin-top: 4px;
+}
+
+.cursor-review-loop-whosup {
+    margin-bottom: 8px;
+}
+
+.cursor-review-loop-whosup-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--center-channel-color);
+}
+
+.cursor-review-loop-whosup--active .cursor-review-loop-whosup-label,
+.cursor-review-loop-whosup-label.cursor-review-loop-whosup--active {
+    color: var(--button-bg);
+}
+
+.cursor-review-loop-whosup-label.cursor-review-loop-whosup--approved {
+    color: var(--online-indicator);
+}
+
+.cursor-review-loop-whosup-label.cursor-review-loop-whosup--waiting {
+    color: var(--away-indicator);
+}
+
+.cursor-review-loop-whosup-label.cursor-review-loop-whosup--complete {
+    color: var(--online-indicator);
+}
+
+.cursor-review-loop-whosup-label.cursor-review-loop-whosup--warning {
+    color: var(--dnd-indicator);
+}
+
+.cursor-review-loop-whosup-label.cursor-review-loop-whosup--failed {
+    color: var(--dnd-indicator);
+}
+
+.cursor-review-loop-iteration {
+    font-size: 12px;
+    color: rgba(var(--center-channel-color-rgb), 0.56);
+    margin-bottom: 8px;
+}
+
+.cursor-review-loop-pr {
+    margin-bottom: 8px;
+}
+
+/* --- Review Loop Timeline --- */
+
+.cursor-review-loop-timeline {
+    margin-top: 8px;
+    padding-left: 8px;
+    border-left: 2px solid rgba(var(--center-channel-color-rgb), 0.12);
+}
+
+.cursor-review-loop-timeline-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 4px 0;
+    position: relative;
+}
+
+.cursor-review-loop-timeline-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: rgba(var(--center-channel-color-rgb), 0.3);
+    flex-shrink: 0;
+    margin-top: 5px;
+    margin-left: -12px;
+}
+
+.cursor-review-loop-timeline-content {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.cursor-review-loop-timeline-phase {
+    color: var(--center-channel-color);
+    font-weight: 600;
+}
+
+.cursor-review-loop-timeline-detail {
+    color: rgba(var(--center-channel-color-rgb), 0.72);
+}
+
+.cursor-review-loop-timeline-time {
+    color: rgba(var(--center-channel-color-rgb), 0.4);
+    font-size: 11px;
+    margin-left: auto;
+    white-space: nowrap;
+}

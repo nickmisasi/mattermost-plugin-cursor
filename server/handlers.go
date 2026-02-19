@@ -307,6 +307,7 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 		Target: &cursor.Target{
 			BranchName:   sanitizeBranchName(parsed.Prompt),
 			AutoCreatePr: autoCreatePR,
+			AutoBranch:   true,
 		},
 		Model: modelName,
 	}
@@ -844,16 +845,26 @@ func (p *Plugin) generateDescription(contextText string) string {
 // If the error is a cursor.APIError with a JSON RawBody, the JSON is pretty-printed inside a
 // markdown code block so that Mattermost renders it cleanly (no emoji parsing, proper wrapping).
 func formatAPIError(action string, err error) string {
+	var msg string
 	var apiErr *cursor.APIError
 	if errors.As(err, &apiErr) && apiErr.RawBody != "" && strings.HasPrefix(strings.TrimSpace(apiErr.RawBody), "{") {
 		var prettyJSON bytes.Buffer
 		if jsonErr := json.Indent(&prettyJSON, []byte(apiErr.RawBody), "", "  "); jsonErr == nil {
-			return fmt.Sprintf(":x: **%s**\n\nError details:\n```json\n%s\n```", action, prettyJSON.String())
+			msg = fmt.Sprintf(":x: **%s**\n\nError details:\n```json\n%s\n```", action, prettyJSON.String())
+		} else {
+			// json.Indent failed -- still wrap the raw body in a code block.
+			msg = fmt.Sprintf(":x: **%s**\n\nError details:\n```\n%s\n```", action, apiErr.RawBody)
 		}
-		// json.Indent failed -- still wrap the raw body in a code block.
-		return fmt.Sprintf(":x: **%s**\n\nError details:\n```\n%s\n```", action, apiErr.RawBody)
+	} else {
+		msg = fmt.Sprintf(":x: **%s**\n\n%s", action, err.Error())
 	}
-	return fmt.Sprintf(":x: **%s**\n\n%s", action, err.Error())
+
+	// Detect branch-not-found errors and append a helpful tip.
+	if strings.Contains(err.Error(), "does not exist in repository") {
+		msg += "\n\n:bulb: **Tip:** Add `branch=main` (or the correct branch name) to your `@cursor` message to override the default branch setting."
+	}
+
+	return msg
 }
 
 // sanitizeBranchName creates a branch-name-safe slug from a prompt.

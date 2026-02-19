@@ -1,12 +1,14 @@
 import React from 'react';
 
-import type {WorkflowPhase} from '../../types';
+import type {ReviewLoopPhase, WorkflowPhase} from '../../types';
 
 interface Props {
     phase: WorkflowPhase;
     planIterationCount: number;
     skipContextReview?: boolean;
     skipPlanLoop?: boolean;
+    reviewLoopPhase?: ReviewLoopPhase;
+    reviewLoopIteration?: number;
 }
 
 interface Step {
@@ -16,7 +18,7 @@ interface Step {
     isComplete: boolean;
 }
 
-function buildSteps(phase: WorkflowPhase, planIterationCount: number, skipContextReview?: boolean, skipPlanLoop?: boolean): Step[] {
+function buildSteps(phase: WorkflowPhase, planIterationCount: number, skipContextReview?: boolean, skipPlanLoop?: boolean, reviewLoopPhase?: ReviewLoopPhase, reviewLoopIteration?: number): Step[] {
     const steps: Step[] = [];
 
     if (!skipContextReview) {
@@ -45,15 +47,32 @@ function buildSteps(phase: WorkflowPhase, planIterationCount: number, skipContex
         isComplete: phase === 'complete',
     });
 
+    // Optional "Review" step -- only shown when a review loop is active.
+    if (reviewLoopPhase) {
+        const isTerminal = reviewLoopPhase === 'complete' || reviewLoopPhase === 'max_iterations' || reviewLoopPhase === 'failed';
+        const isActive = phase === 'complete' && !isTerminal;
+        const isComplete = isTerminal && reviewLoopPhase === 'complete';
+        const reviewLabel = reviewLoopIteration && reviewLoopIteration > 1 ?
+            `Review (iter ${reviewLoopIteration})` :
+            'Review';
+
+        steps.push({
+            key: 'review',
+            label: reviewLabel,
+            isActive,
+            isComplete,
+        });
+    }
+
     return steps;
 }
 
-const PhaseProgress: React.FC<Props> = ({phase, planIterationCount, skipContextReview, skipPlanLoop}) => {
+const PhaseProgress: React.FC<Props> = ({phase, planIterationCount, skipContextReview, skipPlanLoop, reviewLoopPhase, reviewLoopIteration}) => {
     if (phase === 'rejected') {
         return null;
     }
 
-    const steps = buildSteps(phase, planIterationCount, skipContextReview, skipPlanLoop);
+    const steps = buildSteps(phase, planIterationCount, skipContextReview, skipPlanLoop, reviewLoopPhase, reviewLoopIteration);
 
     return (
         <div className='cursor-phase-progress'>

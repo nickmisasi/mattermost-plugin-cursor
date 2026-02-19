@@ -8,6 +8,8 @@ import {
     SET_LOADING,
     WORKFLOW_RECEIVED,
     WORKFLOW_PHASE_CHANGED,
+    REVIEW_LOOP_CHANGED,
+    REVIEW_LOOP_RECEIVED,
 } from './actions';
 import type {PluginAction} from './actions';
 import type {Agent, PluginState} from './types';
@@ -15,6 +17,7 @@ import type {Agent, PluginState} from './types';
 const initialState: PluginState = {
     agents: {},
     workflows: {},
+    reviewLoops: {},
     selectedAgentId: null,
     isLoading: false,
 };
@@ -47,6 +50,7 @@ export default function reducer(state: PluginState = initialState, action: Plugi
                     status: action.data.status,
                     pr_url: action.data.pr_url || existing.pr_url,
                     summary: action.data.summary || existing.summary,
+                    target_branch: action.data.target_branch !== undefined ? action.data.target_branch : existing.target_branch,
                     updated_at: action.data.updated_at,
                 },
             },
@@ -114,6 +118,47 @@ export default function reducer(state: PluginState = initialState, action: Plugi
             ...state,
             workflows: updatedWorkflows,
             agents: agentsChanged ? updatedAgents : state.agents,
+        };
+    }
+    case REVIEW_LOOP_RECEIVED:
+        return {
+            ...state,
+            reviewLoops: {...state.reviewLoops, [action.data.id]: action.data},
+        };
+    case REVIEW_LOOP_CHANGED: {
+        const existingRL = state.reviewLoops[action.data.review_loop_id];
+
+        // Update the review loop object if it exists in state.
+        const updatedReviewLoops = existingRL ? {
+            ...state.reviewLoops,
+            [action.data.review_loop_id]: {
+                ...existingRL,
+                phase: action.data.phase,
+                iteration: action.data.iteration,
+                pr_url: action.data.pr_url || existingRL.pr_url,
+                updated_at: action.data.updated_at,
+            },
+        } : state.reviewLoops;
+
+        // Propagate review loop phase to the associated agent so AgentCard
+        // updates without a full refetch.
+        const rlAgentID = action.data.agent_record_id;
+        const rlAgent = state.agents[rlAgentID];
+        const updatedRLAgents = rlAgent ? {
+            ...state.agents,
+            [rlAgentID]: {
+                ...rlAgent,
+                review_loop_id: action.data.review_loop_id,
+                review_loop_phase: action.data.phase,
+                review_loop_iteration: action.data.iteration,
+                updated_at: action.data.updated_at,
+            },
+        } : state.agents;
+
+        return {
+            ...state,
+            reviewLoops: updatedReviewLoops,
+            agents: rlAgent ? updatedRLAgents : state.agents,
         };
     }
     default:

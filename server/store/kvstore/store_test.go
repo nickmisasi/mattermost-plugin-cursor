@@ -55,6 +55,7 @@ func TestSaveAndGetAgent(t *testing.T) {
 	mockKVSet(api, prefixAgent+"agent-123", mustJSON(t, record))
 	mockKVSet(api, prefixAgentIdx+"agent-123", mustJSON(t, "agent-123"))
 	mockKVSet(api, prefixUserAgentIdx+"user-1:agent-123", mustJSON(t, "agent-123"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-123") // Active status, no PrURL -> delete index
 
 	err := s.SaveAgent(record)
 	require.NoError(t, err)
@@ -81,6 +82,7 @@ func TestSaveAgentCreatingStatus(t *testing.T) {
 
 	mockKVSet(api, prefixAgent+"agent-new", mustJSON(t, record))
 	mockKVSet(api, prefixAgentIdx+"agent-new", mustJSON(t, "agent-new"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-new") // Active status -> delete index
 
 	err := s.SaveAgent(record)
 	require.NoError(t, err)
@@ -99,6 +101,7 @@ func TestSaveAgentTerminalStatusRemovesIndex(t *testing.T) {
 
 			mockKVSet(api, prefixAgent+"agent-terminal", mustJSON(t, record))
 			mockKVDelete(api, prefixAgentIdx+"agent-terminal")
+			mockKVDelete(api, prefixFinishedWithPR+"agent-terminal") // No PrURL -> delete index
 
 			err := s.SaveAgent(record)
 			require.NoError(t, err)
@@ -114,6 +117,7 @@ func TestDeleteAgent(t *testing.T) {
 	api.On("KVGet", prefixAgent+"agent-del").Return([]byte(nil), nil)
 	mockKVDelete(api, prefixAgent+"agent-del")
 	mockKVDelete(api, prefixAgentIdx+"agent-del")
+	mockKVDelete(api, prefixFinishedWithPR+"agent-del")
 
 	err := s.DeleteAgent("agent-del")
 	require.NoError(t, err)
@@ -132,6 +136,7 @@ func TestDeleteAgentWithUserIndex(t *testing.T) {
 	api.On("KVGet", prefixAgent+"agent-del-user").Return(mustJSON(t, record), nil)
 	mockKVDelete(api, prefixAgent+"agent-del-user")
 	mockKVDelete(api, prefixAgentIdx+"agent-del-user")
+	mockKVDelete(api, prefixFinishedWithPR+"agent-del-user")
 	mockKVDelete(api, prefixUserAgentIdx+"user-1:agent-del-user")
 
 	err := s.DeleteAgent("agent-del-user")
@@ -508,4 +513,334 @@ func TestPhaseConstants(t *testing.T) {
 	assert.Equal(t, "implementing", PhaseImplementing)
 	assert.Equal(t, "rejected", PhaseRejected)
 	assert.Equal(t, "complete", PhaseComplete)
+}
+
+func TestSaveAndGetReviewLoop(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:            "rl-123",
+		AgentRecordID: "agent-456",
+		UserID:        "user-1",
+		ChannelID:     "ch-1",
+		RootPostID:    "root-1",
+		TriggerPostID: "trigger-1",
+		PRURL:         "https://github.com/org/repo/pull/42",
+		PRNumber:      42,
+		Repository:    "org/repo",
+		Owner:         "org",
+		Repo:          "repo",
+		Phase:         ReviewPhaseRequestingReview,
+		Iteration:     1,
+		CreatedAt:     1000,
+		UpdatedAt:     1000,
+	}
+
+	mockKVSet(api, prefixReviewLoop+"rl-123", mustJSON(t, loop))
+	mockKVSet(api, prefixRLByPR+"https://github.com/org/repo/pull/42", mustJSON(t, "rl-123"))
+	mockKVSet(api, prefixRLByAgent+"agent-456", mustJSON(t, "rl-123"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-456") // Clear janitor index on loop creation
+
+	err := s.SaveReviewLoop(loop)
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixReviewLoop+"rl-123").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoop("rl-123")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rl-123", got.ID)
+	assert.Equal(t, "agent-456", got.AgentRecordID)
+	assert.Equal(t, ReviewPhaseRequestingReview, got.Phase)
+	assert.Equal(t, 42, got.PRNumber)
+	assert.Equal(t, "org/repo", got.Repository)
+	api.AssertExpectations(t)
+}
+
+func TestSaveAndGetReviewLoopWithFeedbackFields(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:                      "rl-feedback",
+		AgentRecordID:           "agent-feedback",
+		UserID:                  "user-1",
+		ChannelID:               "ch-1",
+		RootPostID:              "root-1",
+		TriggerPostID:           "trigger-1",
+		PRURL:                   "https://github.com/org/repo/pull/77",
+		PRNumber:                77,
+		Repository:              "org/repo",
+		Owner:                   "org",
+		Repo:                    "repo",
+		Phase:                   ReviewPhaseCursorFixing,
+		Iteration:               3,
+		LastCommitSHA:           "abc123",
+		LastFeedbackDispatchAt:  1700000000000,
+		LastFeedbackDispatchSHA: "abc123",
+		LastFeedbackDigest:      "digest-1",
+		FeedbackCursor:          "cursor-1",
+		Findings: []ReviewFinding{
+			{
+				Key:                "finding-1",
+				Status:             "open",
+				SourceType:         "review_comment",
+				SourceID:           1234,
+				SourceNodeID:       "PRRC_kwDOA1234",
+				SourceURL:          "https://github.com/org/repo/pull/77#discussion_r1234",
+				ReviewerLogin:      "coderabbitai[bot]",
+				ReviewerType:       "ai_bot",
+				Path:               "server/api.go",
+				Line:               42,
+				CommitSHA:          "abc123",
+				RawText:            "Potential nil pointer dereference",
+				ActionableText:     "Guard against nil before dereference",
+				FirstSeenAt:        1700000000000,
+				LastSeenAt:         1700000005000,
+				FirstSeenIteration: 2,
+				LastSeenIteration:  3,
+			},
+		},
+		CreatedAt: 1700000000000,
+		UpdatedAt: 1700000005000,
+	}
+
+	mockKVSet(api, prefixReviewLoop+"rl-feedback", mustJSON(t, loop))
+	mockKVSet(api, prefixRLByPR+"https://github.com/org/repo/pull/77", mustJSON(t, "rl-feedback"))
+	mockKVSet(api, prefixRLByAgent+"agent-feedback", mustJSON(t, "rl-feedback"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-feedback")
+
+	err := s.SaveReviewLoop(loop)
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixReviewLoop+"rl-feedback").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoop("rl-feedback")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, int64(1700000000000), got.LastFeedbackDispatchAt)
+	assert.Equal(t, "abc123", got.LastFeedbackDispatchSHA)
+	assert.Equal(t, "digest-1", got.LastFeedbackDigest)
+	assert.Equal(t, "cursor-1", got.FeedbackCursor)
+	require.Len(t, got.Findings, 1)
+	assert.Equal(t, "finding-1", got.Findings[0].Key)
+	assert.Equal(t, "review_comment", got.Findings[0].SourceType)
+	assert.Equal(t, 42, got.Findings[0].Line)
+	assert.Equal(t, "Guard against nil before dereference", got.Findings[0].ActionableText)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoop_BackwardCompatibleWithoutFeedbackFields(t *testing.T) {
+	s, api := setupStore(t)
+
+	legacyLoop := map[string]any{
+		"id":            "rl-legacy",
+		"agentRecordId": "agent-legacy",
+		"userId":        "user-1",
+		"channelId":     "ch-1",
+		"rootPostId":    "root-1",
+		"triggerPostId": "trigger-1",
+		"prUrl":         "https://github.com/org/repo/pull/88",
+		"prNumber":      88,
+		"repository":    "org/repo",
+		"owner":         "org",
+		"repo":          "repo",
+		"phase":         ReviewPhaseAwaitingReview,
+		"iteration":     1,
+		"createdAt":     1700000000000,
+		"updatedAt":     1700000001000,
+	}
+
+	api.On("KVGet", prefixReviewLoop+"rl-legacy").Return(mustJSON(t, legacyLoop), nil)
+
+	got, err := s.GetReviewLoop("rl-legacy")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rl-legacy", got.ID)
+	assert.Equal(t, ReviewPhaseAwaitingReview, got.Phase)
+	assert.Zero(t, got.LastFeedbackDispatchAt)
+	assert.Empty(t, got.LastFeedbackDispatchSHA)
+	assert.Empty(t, got.LastFeedbackDigest)
+	assert.Empty(t, got.FeedbackCursor)
+	assert.Nil(t, got.Findings)
+	api.AssertExpectations(t)
+}
+
+func TestGetNonExistentReviewLoop(t *testing.T) {
+	s, api := setupStore(t)
+
+	api.On("KVGet", prefixReviewLoop+"nonexistent").Return([]byte(nil), nil)
+
+	got, err := s.GetReviewLoop("nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	api.AssertExpectations(t)
+}
+
+func TestDeleteReviewLoop(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:            "rl-del",
+		AgentRecordID: "agent-del",
+		PRURL:         "https://github.com/org/repo/pull/99",
+	}
+
+	// GetReviewLoop is called first to find indexes to clean up.
+	api.On("KVGet", prefixReviewLoop+"rl-del").Return(mustJSON(t, loop), nil)
+	mockKVDelete(api, prefixReviewLoop+"rl-del")
+	mockKVDelete(api, prefixRLByPR+"https://github.com/org/repo/pull/99")
+	mockKVDelete(api, prefixRLByAgent+"agent-del")
+
+	err := s.DeleteReviewLoop("rl-del")
+	require.NoError(t, err)
+	api.AssertExpectations(t)
+}
+
+func TestDeleteReviewLoopNotFound(t *testing.T) {
+	s, api := setupStore(t)
+
+	// GetReviewLoop returns nil (not found).
+	api.On("KVGet", prefixReviewLoop+"rl-gone").Return([]byte(nil), nil)
+	mockKVDelete(api, prefixReviewLoop+"rl-gone")
+
+	err := s.DeleteReviewLoop("rl-gone")
+	require.NoError(t, err)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoopByPRURL(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:    "rl-pr",
+		PRURL: "https://github.com/org/repo/pull/42",
+		Phase: ReviewPhaseAwaitingReview,
+	}
+
+	// Index lookup returns the review loop ID.
+	api.On("KVGet", prefixRLByPR+"https://github.com/org/repo/pull/42").Return(mustJSON(t, "rl-pr"), nil)
+	// Then fetch the full record.
+	api.On("KVGet", prefixReviewLoop+"rl-pr").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoopByPRURL("https://github.com/org/repo/pull/42")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rl-pr", got.ID)
+	assert.Equal(t, ReviewPhaseAwaitingReview, got.Phase)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoopByPRURLNotFound(t *testing.T) {
+	s, api := setupStore(t)
+
+	api.On("KVGet", prefixRLByPR+"https://github.com/org/repo/pull/999").Return([]byte(nil), nil)
+
+	got, err := s.GetReviewLoopByPRURL("https://github.com/org/repo/pull/999")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoopByPRURLNormalizesTrailingSlash(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:    "rl-slash",
+		PRURL: "https://github.com/org/repo/pull/42",
+		Phase: ReviewPhaseAwaitingReview,
+	}
+
+	// URL has trailing slash but normalizeURL strips it.
+	api.On("KVGet", prefixRLByPR+"https://github.com/org/repo/pull/42").Return(mustJSON(t, "rl-slash"), nil)
+	api.On("KVGet", prefixReviewLoop+"rl-slash").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoopByPRURL("https://github.com/org/repo/pull/42/")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rl-slash", got.ID)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoopByAgent(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:            "rl-agent",
+		AgentRecordID: "agent-789",
+		Phase:         ReviewPhaseCursorFixing,
+	}
+
+	api.On("KVGet", prefixRLByAgent+"agent-789").Return(mustJSON(t, "rl-agent"), nil)
+	api.On("KVGet", prefixReviewLoop+"rl-agent").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoopByAgent("agent-789")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rl-agent", got.ID)
+	assert.Equal(t, ReviewPhaseCursorFixing, got.Phase)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoopByAgentNotFound(t *testing.T) {
+	s, api := setupStore(t)
+
+	api.On("KVGet", prefixRLByAgent+"nonexistent").Return([]byte(nil), nil)
+
+	got, err := s.GetReviewLoopByAgent("nonexistent")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	api.AssertExpectations(t)
+}
+
+func TestReviewLoopWithHistory(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:            "rl-hist",
+		AgentRecordID: "agent-hist",
+		UserID:        "user-1",
+		ChannelID:     "ch-1",
+		RootPostID:    "root-1",
+		PRURL:         "https://github.com/org/repo/pull/10",
+		Phase:         ReviewPhaseCursorFixing,
+		Iteration:     2,
+		History: []ReviewLoopEvent{
+			{Phase: ReviewPhaseRequestingReview, Timestamp: 1000, Detail: ""},
+			{Phase: ReviewPhaseAwaitingReview, Timestamp: 1001, Detail: ""},
+			{Phase: ReviewPhaseCursorFixing, Timestamp: 1500, Detail: "3 comments"},
+		},
+		CreatedAt: 1000,
+		UpdatedAt: 1500,
+	}
+
+	mockKVSet(api, prefixReviewLoop+"rl-hist", mustJSON(t, loop))
+	mockKVSet(api, prefixRLByPR+"https://github.com/org/repo/pull/10", mustJSON(t, "rl-hist"))
+	mockKVSet(api, prefixRLByAgent+"agent-hist", mustJSON(t, "rl-hist"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-hist") // Clear janitor index on loop creation
+
+	err := s.SaveReviewLoop(loop)
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixReviewLoop+"rl-hist").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoop("rl-hist")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.History, 3)
+	assert.Equal(t, ReviewPhaseRequestingReview, got.History[0].Phase)
+	assert.Equal(t, ReviewPhaseCursorFixing, got.History[2].Phase)
+	assert.Equal(t, "3 comments", got.History[2].Detail)
+	assert.Equal(t, 2, got.Iteration)
+	api.AssertExpectations(t)
+}
+
+func TestReviewPhaseConstants(t *testing.T) {
+	assert.Equal(t, "requesting_review", ReviewPhaseRequestingReview)
+	assert.Equal(t, "awaiting_review", ReviewPhaseAwaitingReview)
+	assert.Equal(t, "cursor_fixing", ReviewPhaseCursorFixing)
+	assert.Equal(t, "approved", ReviewPhaseApproved)
+	assert.Equal(t, "human_review", ReviewPhaseHumanReview)
+	assert.Equal(t, "complete", ReviewPhaseComplete)
+	assert.Equal(t, "max_iterations", ReviewPhaseMaxIterations)
+	assert.Equal(t, "failed", ReviewPhaseFailed)
 }

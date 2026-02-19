@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/go-github/v68/github"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -29,6 +30,7 @@ func setupAPITestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClie
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 	// getUsername calls GetUser -- provide a default mock.
 	api.On("GetUser", mock.AnythingOfType("string")).Return(&model.User{
@@ -101,6 +103,7 @@ func TestGetAgents_Success(t *testing.T) {
 			Status:        "RUNNING",
 			Repository:    "org/repo",
 			Branch:        "main",
+			TargetBranch:  "cursor/fix-login",
 			ChannelID:     "ch-1",
 			PostID:        "post-1",
 			UserID:        "user-1",
@@ -119,6 +122,7 @@ func TestGetAgents_Success(t *testing.T) {
 
 	store.On("GetAgentsByUser", "user-1").Return(records, nil)
 	store.On("GetWorkflowByAgent", mock.AnythingOfType("string")).Return("", nil)
+	store.On("GetReviewLoopByAgent", mock.AnythingOfType("string")).Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -128,6 +132,7 @@ func TestGetAgents_Success(t *testing.T) {
 	assert.Len(t, resp.Agents, 2)
 	assert.Equal(t, "agent-1", resp.Agents[0].ID)
 	assert.Equal(t, "RUNNING", resp.Agents[0].Status)
+	assert.Equal(t, "cursor/fix-login", resp.Agents[0].TargetBranch)
 	assert.Equal(t, "post-1", resp.Agents[0].RootPostID)
 	assert.Equal(t, "agent-2", resp.Agents[1].ID)
 	assert.Equal(t, "https://github.com/org/repo2/pull/1", resp.Agents[1].PrURL)
@@ -139,6 +144,7 @@ func TestGetAgents_Empty(t *testing.T) {
 
 	store.On("GetAgentsByUser", "user-1").Return([]*kvstore.AgentRecord{}, nil)
 	store.On("GetWorkflowByAgent", mock.AnythingOfType("string")).Return("", nil)
+	store.On("GetReviewLoopByAgent", mock.AnythingOfType("string")).Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -167,6 +173,7 @@ func TestGetAgent_Success(t *testing.T) {
 		Status:        "RUNNING",
 		Repository:    "org/repo",
 		Branch:        "main",
+		TargetBranch:  "cursor/fix-login",
 		ChannelID:     "ch-1",
 		PostID:        "post-1",
 		UserID:        "user-1",
@@ -178,6 +185,7 @@ func TestGetAgent_Success(t *testing.T) {
 		Status: cursor.AgentStatusRunning,
 	}, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -186,6 +194,7 @@ func TestGetAgent_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, "agent-1", resp.ID)
 	assert.Equal(t, "RUNNING", resp.Status)
+	assert.Equal(t, "cursor/fix-login", resp.TargetBranch)
 	assert.Equal(t, "https://cursor.com/agents/agent-1", resp.CursorURL)
 	assert.Equal(t, "post-1", resp.RootPostID)
 }
@@ -227,12 +236,18 @@ func TestGetAgent_RefreshesStatusFromCursor(t *testing.T) {
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:     "agent-1",
 		Status: cursor.AgentStatusFinished,
-		Target: cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/99"},
+		Target: cursor.AgentTarget{
+			PrURL:      "https://github.com/org/repo/pull/99",
+			BranchName: "cursor/fix-login",
+		},
 	}, nil)
 	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
-		return r.Status == "FINISHED" && r.PrURL == "https://github.com/org/repo/pull/99"
+		return r.Status == "FINISHED" &&
+			r.PrURL == "https://github.com/org/repo/pull/99" &&
+			r.TargetBranch == "cursor/fix-login"
 	})).Return(nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -241,6 +256,7 @@ func TestGetAgent_RefreshesStatusFromCursor(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, "FINISHED", resp.Status)
 	assert.Equal(t, "https://github.com/org/repo/pull/99", resp.PrURL)
+	assert.Equal(t, "cursor/fix-login", resp.TargetBranch)
 }
 
 func TestGetAgent_TerminalStatus_SkipsRefresh(t *testing.T) {
@@ -256,6 +272,7 @@ func TestGetAgent_TerminalStatus_SkipsRefresh(t *testing.T) {
 
 	store.On("GetAgent", "agent-1").Return(record, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -780,6 +797,7 @@ func TestGetAgents_IncludesWorkflowFields(t *testing.T) {
 		Phase:              kvstore.PhasePlanning,
 		PlanIterationCount: 3,
 	}, nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -809,6 +827,7 @@ func TestGetAgents_NoWorkflowFields_WhenNoWorkflow(t *testing.T) {
 
 	store.On("GetAgentsByUser", "user-1").Return(records, nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -846,6 +865,7 @@ func TestGetAgent_IncludesWorkflowFields(t *testing.T) {
 		Phase:              kvstore.PhaseImplementing,
 		PlanIterationCount: 1,
 	}, nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -910,6 +930,40 @@ func TestArchiveAgent_StopsRunningAgent(t *testing.T) {
 	cursorClient.AssertCalled(t, "StopAgent", mock.Anything, "agent-1")
 }
 
+func TestArchiveAgent_StopsRunningAgent_AlreadyDeletedInCloud(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		message    string
+	}{
+		{"409 agent deleted", 409, "Agent is deleted"},
+		{"400 agent not running", 400, "Cloud Agent not running.: This Cloud Agent is no longer available."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, _, cursorClient, store := setupAPITestPlugin(t)
+
+			record := &kvstore.AgentRecord{
+				CursorAgentID: "agent-1",
+				Status:        "RUNNING",
+				UserID:        "user-1",
+				Repository:    "org/repo",
+			}
+
+			store.On("GetAgent", "agent-1").Return(record, nil)
+			cursorClient.On("StopAgent", mock.Anything, "agent-1").Return(nil, &cursor.APIError{StatusCode: tt.statusCode, Message: tt.message})
+			store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+				return r.Archived && r.Status == "STOPPED"
+			})).Return(nil)
+			store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+
+			rr := doRequest(p, http.MethodPost, "/api/v1/agents/agent-1/archive", nil, "user-1")
+			assert.Equal(t, http.StatusOK, rr.Code)
+		})
+	}
+}
+
 func TestArchiveAgent_NotFound(t *testing.T) {
 	p, _, _, store := setupAPITestPlugin(t)
 
@@ -956,6 +1010,7 @@ func TestGetAgents_FiltersOutArchived(t *testing.T) {
 
 	store.On("GetAgentsByUser", "user-1").Return(records, nil)
 	store.On("GetWorkflowByAgent", mock.AnythingOfType("string")).Return("", nil)
+	store.On("GetReviewLoopByAgent", mock.AnythingOfType("string")).Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -987,6 +1042,7 @@ func TestGetAgents_ReturnsOnlyArchived(t *testing.T) {
 
 	store.On("GetAgentsByUser", "user-1").Return(records, nil)
 	store.On("GetWorkflowByAgent", mock.AnythingOfType("string")).Return("", nil)
+	store.On("GetReviewLoopByAgent", mock.AnythingOfType("string")).Return(nil, nil)
 
 	rr := doRequest(p, http.MethodGet, "/api/v1/agents?archived=true", nil, "user-1")
 	assert.Equal(t, http.StatusOK, rr.Code)
@@ -996,4 +1052,285 @@ func TestGetAgents_ReturnsOnlyArchived(t *testing.T) {
 	assert.Len(t, resp.Agents, 1)
 	assert.Equal(t, "agent-2", resp.Agents[0].ID)
 	assert.True(t, resp.Agents[0].Archived)
+}
+
+// --- GET /api/v1/review-loops/{id} ---
+
+func TestGetReviewLoop_Success(t *testing.T) {
+	p, _, _, store := setupAPITestPlugin(t)
+
+	loop := &kvstore.ReviewLoop{
+		ID:            "loop-1",
+		AgentRecordID: "agent-1",
+		WorkflowID:    "wf-1",
+		UserID:        "user-1",
+		ChannelID:     "ch-1",
+		RootPostID:    "root-1",
+		TriggerPostID: "trigger-1",
+		PRURL:         "https://github.com/org/repo/pull/42",
+		PRNumber:      42,
+		Owner:         "org",
+		Repo:          "repo",
+		Repository:    "org/repo",
+		Phase:         kvstore.ReviewPhaseAwaitingReview,
+		Iteration:     2,
+		LastCommitSHA: "abc123",
+		History: []kvstore.ReviewLoopEvent{
+			{Phase: kvstore.ReviewPhaseRequestingReview, Timestamp: 1000, Detail: "Review requested"},
+			{Phase: kvstore.ReviewPhaseAwaitingReview, Timestamp: 1500, Detail: "Iteration 3 (direct follow-up dispatched; 2 new, 1 repeated, 4 dismissed)"},
+			{Phase: kvstore.ReviewPhaseCursorFixing, Timestamp: 2000},
+		},
+		CreatedAt: 1000,
+		UpdatedAt: 2000,
+	}
+
+	store.On("GetReviewLoop", "loop-1").Return(loop, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/review-loops/loop-1", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp ReviewLoopResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "loop-1", resp.ID)
+	assert.Equal(t, "agent-1", resp.AgentRecordID)
+	assert.Equal(t, "wf-1", resp.WorkflowID)
+	assert.Equal(t, "user-1", resp.UserID)
+	assert.Equal(t, kvstore.ReviewPhaseAwaitingReview, resp.Phase)
+	assert.Equal(t, 2, resp.Iteration)
+	assert.Equal(t, "abc123", resp.LastCommitSHA)
+	assert.Len(t, resp.History, 3)
+	assert.Equal(t, kvstore.ReviewPhaseRequestingReview, resp.History[0].Phase)
+	assert.Equal(t, "Review requested", resp.History[0].Detail)
+	assert.Equal(t, int64(1000), resp.History[0].Timestamp)
+	assert.Equal(t, "Iteration 3 (direct follow-up dispatched; 2 new, 1 repeated, 4 dismissed)", resp.History[1].Detail)
+	assert.Equal(t, kvstore.ReviewPhaseCursorFixing, resp.History[2].Phase)
+	assert.Empty(t, resp.History[2].Detail)
+}
+
+func TestGetReviewLoop_NotFound(t *testing.T) {
+	p, _, _, store := setupAPITestPlugin(t)
+
+	store.On("GetReviewLoop", "loop-nonexistent").Return(nil, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/review-loops/loop-nonexistent", nil, "user-1")
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+func TestGetReviewLoop_WrongUser(t *testing.T) {
+	p, _, _, store := setupAPITestPlugin(t)
+
+	loop := &kvstore.ReviewLoop{
+		ID:     "loop-1",
+		UserID: "other-user",
+		Phase:  kvstore.ReviewPhaseAwaitingReview,
+	}
+
+	store.On("GetReviewLoop", "loop-1").Return(loop, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/review-loops/loop-1", nil, "user-1")
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
+// --- GET /api/v1/agents -- review loop field inclusion ---
+
+func TestGetAgents_IncludesReviewLoopFields(t *testing.T) {
+	p, _, _, store := setupAPITestPlugin(t)
+
+	records := []*kvstore.AgentRecord{
+		{
+			CursorAgentID: "agent-1",
+			Status:        "FINISHED",
+			Repository:    "org/repo",
+			Branch:        "main",
+			ChannelID:     "ch-1",
+			PostID:        "post-1",
+			UserID:        "user-1",
+		},
+	}
+
+	store.On("GetAgentsByUser", "user-1").Return(records, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(&kvstore.ReviewLoop{
+		ID:        "loop-1",
+		Phase:     kvstore.ReviewPhaseHumanReview,
+		Iteration: 3,
+	}, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentsListResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	require.Len(t, resp.Agents, 1)
+	assert.Equal(t, "loop-1", resp.Agents[0].ReviewLoopID)
+	assert.Equal(t, kvstore.ReviewPhaseHumanReview, resp.Agents[0].ReviewLoopPhase)
+	assert.Equal(t, 3, resp.Agents[0].ReviewLoopIteration)
+}
+
+// --- GET /api/v1/agents/{id} -- GitHub freshness check ---
+
+func TestHandleGetAgent_BackfillsPrURL(t *testing.T) {
+	p, _, _, store := setupAPITestPlugin(t)
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+	// Disable review loop so the test focuses on PrURL backfill.
+	p.configuration = &configuration{
+		CursorAPIKey:       "test-key",
+		DefaultRepository:  "org/repo",
+		EnableAIReviewLoop: false,
+	}
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "FINISHED",
+		Repository:    "org/repo",
+		Branch:        "main",
+		TargetBranch:  "cursor/fix-login",
+		UserID:        "user-1",
+	}
+
+	store.On("GetAgent", "agent-1").Return(record, nil)
+
+	// GitHub returns a matching PR.
+	ghMock.On("GetPullRequestByBranch", mock.Anything, "org", "repo", "cursor/fix-login").Return(
+		&github.PullRequest{
+			HTMLURL: github.Ptr("https://github.com/org/repo/pull/42"),
+		}, nil,
+	)
+
+	// SaveAgent called with backfilled PrURL.
+	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.PrURL == "https://github.com/org/repo/pull/42"
+	})).Return(nil)
+
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "https://github.com/org/repo/pull/42", resp.PrURL)
+	assert.Equal(t, "cursor/fix-login", resp.TargetBranch)
+
+	// Verify SaveAgent was called.
+	store.AssertCalled(t, "SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
+		return r.PrURL == "https://github.com/org/repo/pull/42"
+	}))
+}
+
+func TestHandleGetAgent_NoGitHubClient(t *testing.T) {
+	p, _, cursorClient, store := setupAPITestPlugin(t)
+	// Ensure no GitHub client is set.
+	p.githubClient = nil
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "FINISHED",
+		Repository:    "org/repo",
+		Branch:        "main",
+		TargetBranch:  "cursor/fix-login",
+		UserID:        "user-1",
+	}
+
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
+	_ = cursorClient // Terminal status, no Cursor API refresh.
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	// PrURL should still be empty -- no GitHub client to query.
+	assert.Empty(t, resp.PrURL)
+}
+
+func TestHandleGetAgent_NoPROnGitHub(t *testing.T) {
+	p, _, cursorClient, store := setupAPITestPlugin(t)
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "FINISHED",
+		Repository:    "org/repo",
+		Branch:        "main",
+		TargetBranch:  "cursor/fix-login",
+		UserID:        "user-1",
+	}
+
+	store.On("GetAgent", "agent-1").Return(record, nil)
+
+	// GitHub returns no matching PR.
+	ghMock.On("GetPullRequestByBranch", mock.Anything, "org", "repo", "cursor/fix-login").Return(
+		nil, nil,
+	)
+
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
+	_ = cursorClient // Terminal status, no Cursor API refresh.
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	// PrURL should still be empty -- no PR found on GitHub.
+	assert.Empty(t, resp.PrURL)
+
+	// SaveAgent should NOT have been called (no change).
+	store.AssertNotCalled(t, "SaveAgent", mock.Anything)
+}
+
+func TestHandleGetAgent_FreshParam(t *testing.T) {
+	p, _, cursorClient, store := setupAPITestPlugin(t)
+
+	ghMock := &mockGitHubClient{}
+	p.githubClient = ghMock
+	p.configuration = &configuration{
+		CursorAPIKey:       "test-key",
+		DefaultRepository:  "org/repo",
+		EnableAIReviewLoop: true,
+	}
+
+	record := &kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		Status:        "FINISHED",
+		Repository:    "org/repo",
+		Branch:        "main",
+		PrURL:         "https://github.com/org/repo/pull/42",
+		UserID:        "user-1",
+	}
+
+	store.On("GetAgent", "agent-1").Return(record, nil)
+	_ = cursorClient // Terminal status, no Cursor API refresh.
+
+	// ensureReviewLoop should be called due to ?fresh=true.
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.ReviewLoop{
+		ID:    "loop-1",
+		Phase: kvstore.ReviewPhaseAwaitingReview,
+	}, nil)
+
+	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
+	store.On("GetReviewLoopByAgent", "agent-1").Return(&kvstore.ReviewLoop{
+		ID:        "loop-1",
+		Phase:     kvstore.ReviewPhaseAwaitingReview,
+		Iteration: 1,
+	}, nil)
+
+	rr := doRequest(p, http.MethodGet, "/api/v1/agents/agent-1?fresh=true", nil, "user-1")
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp AgentResponse
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, "https://github.com/org/repo/pull/42", resp.PrURL)
+	assert.Equal(t, "loop-1", resp.ReviewLoopID)
+
+	// ensureReviewLoop was called (via GetReviewLoopByPRURL).
+	store.AssertCalled(t, "GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42")
 }
