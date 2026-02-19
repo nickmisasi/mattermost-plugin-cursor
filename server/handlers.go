@@ -294,7 +294,7 @@ func (p *Plugin) launchNewAgent(post *model.Post, parsed *parser.ParsedMention) 
 	}
 
 	// Step 5: Wrap prompt with system instructions for the Cursor agent.
-	promptText = p.wrapPromptWithSystemInstructions(promptText)
+	promptText = p.wrapPromptWithSystemInstructions(promptText, repo)
 
 	// Step 6: Build the Cursor API request.
 	repoURL := repo
@@ -616,8 +616,11 @@ func (p *Plugin) getSystemPrompt() string {
 
 // wrapPromptWithSystemInstructions wraps the task prompt with system instructions
 // so the Cursor agent receives both development guidelines and the actual task.
-func (p *Plugin) wrapPromptWithSystemInstructions(taskPrompt string) string {
+func (p *Plugin) wrapPromptWithSystemInstructions(taskPrompt string, repository string) string {
 	systemPrompt := p.getSystemPrompt()
+	if isMattermostMattermostRepository(repository) {
+		systemPrompt = strings.TrimRight(systemPrompt, "\n") + "\n\n" + mattermostBrowserQAImplementationInstructions
+	}
 	return fmt.Sprintf("<system-instructions>\n%s\n</system-instructions>\n\n<task>\n%s\n</task>", systemPrompt, taskPrompt)
 }
 

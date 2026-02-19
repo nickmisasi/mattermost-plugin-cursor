@@ -354,6 +354,21 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 	return p, api, cursorClient, store
 }
 
+func TestWrapPromptWithSystemInstructions_RepositoryScopedGuidance(t *testing.T) {
+	p, _, _, _ := setupTestPlugin(t)
+
+	scopedPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "mattermost/mattermost")
+	assert.Contains(t, scopedPrompt, "<system-instructions>")
+	assert.Contains(t, scopedPrompt, ".cursor/skills/browser-qa.md")
+	assert.Contains(t, scopedPrompt, "validate the fix when possible")
+
+	scopedURLPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "https://github.com/mattermost/mattermost")
+	assert.Contains(t, scopedURLPrompt, ".cursor/skills/browser-qa.md")
+
+	otherRepoPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "org/repo")
+	assert.NotContains(t, otherRepoPrompt, ".cursor/skills/browser-qa.md")
+}
+
 func TestMessageHasBeenPosted_IgnoresBotPosts(t *testing.T) {
 	p, _, cursorClient, store := setupTestPlugin(t)
 
