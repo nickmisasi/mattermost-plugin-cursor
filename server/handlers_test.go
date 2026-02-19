@@ -354,6 +354,21 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 	return p, api, cursorClient, store
 }
 
+func TestWrapPromptWithSystemInstructions_RepositoryScopedGuidance(t *testing.T) {
+	p, _, _, _ := setupTestPlugin(t)
+
+	scopedPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "mattermost/mattermost")
+	assert.Contains(t, scopedPrompt, "<system-instructions>")
+	assert.Contains(t, scopedPrompt, ".cursor/skills/browser-qa.md")
+	assert.Contains(t, scopedPrompt, "validate the fix when possible")
+
+	scopedURLPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "https://github.com/mattermost/mattermost")
+	assert.Contains(t, scopedURLPrompt, ".cursor/skills/browser-qa.md")
+
+	otherRepoPrompt := p.wrapPromptWithSystemInstructions("fix the login bug", "org/repo")
+	assert.NotContains(t, otherRepoPrompt, ".cursor/skills/browser-qa.md")
+}
+
 func TestMessageHasBeenPosted_IgnoresBotPosts(t *testing.T) {
 	p, _, cursorClient, store := setupTestPlugin(t)
 
@@ -1443,4 +1458,357 @@ func TestHandlePossibleFollowUp_AgentFollowUp_StillWorks(t *testing.T) {
 	p.handlePossibleFollowUp(post)
 
 	cursorClient.AssertCalled(t, "AddFollowup", mock.Anything, "agent-123", mock.Anything)
+}
+
+// --- Additional edge case tests ---
+
+func TestGetDisplayName_UserNotFound(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	api.On("GetUser", "invalid-user").Return(nil, model.NewAppError("test", "not found", nil, "", 404))
+
+	result := p.getDisplayName("invalid-user")
+	assert.Equal(t, "unknown", result)
+}
+
+func TestGetDisplayName_Success(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	api.On("GetUser", "user-1").Return(&model.User{
+		Id:       "user-1",
+		Username: "testuser",
+		Nickname: "Test User",
+		FirstName: "Test",
+		LastName: "User",
+	}, nil)
+
+	result := p.getDisplayName("user-1")
+	assert.NotEmpty(t, result)
+	assert.NotEqual(t, "unknown", result)
+}
+
+func TestSendFollowUp_EmptyFollowUp(t *testing.T) {
+	p, api, _, store := setupTestPlugin(t)
+
+	agentRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	post := &model.Post{
+		Id:      "post-1",
+		UserId:  "user-1",
+		Message: "@cursor   ", // Only mention, no actual text
+	}
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+
+	p.sendFollowUp(post, agentRecord)
+
+	// No API call should be made if follow-up text is empty after stripping mention.
+	api.AssertNotCalled(t, "CreatePost")
+}
+
+func TestSendFollowUp_NilCursorClient(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+	p.cursorClient = nil
+
+	agentRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	post := &model.Post{
+		Id:      "post-1",
+		UserId:  "user-1",
+		Message: "follow up message",
+	}
+
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil)
+
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "x"
+	})).Return(nil, nil)
+
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return strings.Contains(p.Message, "not configured")
+	})).Return(&model.Post{Id: "error-post"}, nil)
+
+	p.sendFollowUp(post, agentRecord)
+
+	api.AssertExpectations(t)
+}
+
+func TestSendFollowUp_APIError(t *testing.T) {
+	p, api, cursorClient, _ := setupTestPlugin(t)
+
+	agentRecord := &kvstore.AgentRecord{
+		CursorAgentID: "agent-123",
+		Status:        "RUNNING",
+	}
+
+	post := &model.Post{
+		Id:      "post-1",
+		UserId:  "user-1",
+		Message: "follow up message",
+	}
+
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil, nil)
+
+	cursorClient.On("AddFollowup", mock.Anything, "agent-123", mock.Anything).Return(nil, &cursor.APIError{
+		StatusCode: 500,
+		Message:    "server error",
+	})
+
+	api.On("RemoveReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "eyes"
+	})).Return(nil)
+
+	api.On("AddReaction", mock.MatchedBy(func(r *model.Reaction) bool {
+		return r.EmojiName == "x"
+	})).Return(nil, nil)
+
+	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
+		return strings.Contains(p.Message, "Failed to send follow-up")
+	})).Return(&model.Post{Id: "error-post"}, nil)
+
+	p.sendFollowUp(post, agentRecord)
+
+	api.AssertExpectations(t)
+	cursorClient.AssertExpectations(t)
+}
+
+func TestGetThreadAgentRecord_NoAgent(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+
+	store.On("GetAgentIDByThread", "root-1").Return("", nil)
+
+	result, err := p.getThreadAgentRecord("root-1")
+	assert.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestGetThreadAgentRecord_GetAgentError(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+
+	store.On("GetAgentIDByThread", "root-1").Return("agent-1", nil)
+	store.On("GetAgent", "agent-1").Return(nil, assert.AnError)
+
+	result, err := p.getThreadAgentRecord("root-1")
+	assert.Error(t, err)
+	assert.Nil(t, result)
+}
+
+func TestEnrichFromThread_LimitsImageCount(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:     "reply-1",
+		UserId: "user-1",
+		RootId: "root-1",
+	}
+
+	// Create 10 images, but maxThreadImages is 5
+	fileIds := make([]string, 10)
+	for i := 0; i < 10; i++ {
+		fileIds[i] = fmt.Sprintf("file-%d", i)
+	}
+
+	api.On("GetPostThread", "root-1").Return(&model.PostList{
+		Order: []string{"root-1"},
+		Posts: map[string]*model.Post{
+			"root-1": {
+				Id:       "root-1",
+				UserId:   "user-1",
+				Message:  "Many images",
+				CreateAt: 1000,
+				FileIds:  model.StringArray(fileIds),
+			},
+		},
+	}, nil)
+
+	// Mock each file, but only first 5 should be retrieved due to limit
+	for i := 0; i < 10; i++ {
+		fileID := fmt.Sprintf("file-%d", i)
+		api.On("GetFileInfo", fileID).Return(&model.FileInfo{
+			Id:       fileID,
+			MimeType: "image/png",
+			Size:     100,
+		}, nil)
+
+		if i < 5 {
+			testPNG := createTestPNG(100, 50)
+			api.On("GetFile", fileID).Return(testPNG, nil)
+		}
+	}
+
+	result := p.enrichFromThread(post)
+	assert.NotNil(t, result)
+	assert.Len(t, result.Images, 5, "should limit to maxThreadImages (5)")
+}
+
+func TestEnrichFromThread_LimitsTotalImageSize(t *testing.T) {
+	p, api, _, _ := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:     "reply-1",
+		UserId: "user-1",
+		RootId: "root-1",
+	}
+
+	// Create large image that exceeds size limit
+	api.On("GetPostThread", "root-1").Return(&model.PostList{
+		Order: []string{"root-1"},
+		Posts: map[string]*model.Post{
+			"root-1": {
+				Id:       "root-1",
+				UserId:   "user-1",
+				Message:  "Large image",
+				CreateAt: 1000,
+				FileIds:  model.StringArray{"file-large", "file-small"},
+			},
+		},
+	}, nil)
+
+	api.On("GetFileInfo", "file-large").Return(&model.FileInfo{
+		Id:       "file-large",
+		MimeType: "image/png",
+		Size:     11 * 1024 * 1024, // 11MB (exceeds maxThreadImageSize of 10MB)
+	}, nil)
+
+	api.On("GetFileInfo", "file-small").Return(&model.FileInfo{
+		Id:       "file-small",
+		MimeType: "image/png",
+		Size:     100,
+	}, nil)
+
+	result := p.enrichFromThread(post)
+	assert.NotNil(t, result)
+	assert.Empty(t, result.Images, "should skip image that exceeds size limit")
+}
+
+func TestResolveDefaults_AutoPROverride(t *testing.T) {
+	p, _, _, store := setupTestPlugin(t)
+	p.configuration = &configuration{
+		DefaultRepository: "org/default-repo",
+		DefaultBranch:     "main",
+		DefaultModel:      "auto",
+		AutoCreatePR:      true,
+	}
+
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	post := &model.Post{
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+	}
+
+	// Test explicit false override
+	autoFalse := false
+	parsed := &parser.ParsedMention{Prompt: "fix it", AutoPR: &autoFalse}
+
+	_, _, _, autoCreatePR := p.resolveDefaults(post, parsed)
+	assert.False(t, autoCreatePR)
+}
+
+func TestHandleMentionInThread_NoAgentNoWorkflow_LaunchesNew(t *testing.T) {
+	p, api, cursorClient, store := setupTestPlugin(t)
+
+	post := &model.Post{
+		Id:        "reply-1",
+		UserId:    "user-1",
+		ChannelId: "ch-1",
+		RootId:    "root-1",
+		Message:   "@cursor fix the bug",
+	}
+
+	parsed := &parser.ParsedMention{Prompt: "fix the bug"}
+
+	// No workflow
+	store.On("GetWorkflowByThread", "root-1").Return(nil, nil)
+
+	// No agent
+	store.On("GetAgentIDByThread", "root-1").Return("", nil)
+
+	// LaunchNewAgent flow
+	store.On("GetUserSettings", "user-1").Return(nil, nil)
+	store.On("GetChannelSettings", "ch-1").Return(nil, nil)
+
+	api.On("AddReaction", mock.Anything).Return(nil, nil)
+	api.On("RemoveReaction", mock.Anything).Return(nil)
+
+	// Thread enrichment
+	api.On("GetPostThread", "root-1").Return(&model.PostList{
+		Order: []string{"root-1"},
+		Posts: map[string]*model.Post{
+			"root-1": {Id: "root-1", UserId: "user-1", Message: "Context", CreateAt: 1000},
+		},
+	}, nil)
+
+	cursorClient.On("LaunchAgent", mock.Anything, mock.Anything).Return(&cursor.Agent{
+		ID:     "agent-new",
+		Status: cursor.AgentStatusCreating,
+	}, nil)
+
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "reply-1"}, nil)
+	store.On("SaveAgent", mock.Anything).Return(nil)
+	store.On("SetThreadAgent", "root-1", "agent-new").Return(nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return()
+
+	p.handleMentionInThread(post, parsed)
+
+	cursorClient.AssertCalled(t, "LaunchAgent", mock.Anything, mock.Anything)
+}
+
+func TestFormatAPIError_JSONIndentError(t *testing.T) {
+	// Test with malformed JSON
+	err := &cursor.APIError{
+		StatusCode: 400,
+		Message:    "bad request",
+		RawBody:    `{"invalid": json}`, // Malformed JSON
+	}
+
+	result := formatAPIError("Operation failed", err)
+	assert.Contains(t, result, "Operation failed")
+	assert.Contains(t, result, "```")
+	// Should still wrap in code block even if JSON indent fails
+}
+
+func TestSanitizeBranchName_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"unicode characters", "修复登录错误", "cursor/agent-"},
+		{"only spaces", "     ", "cursor/agent-"},
+		{"mixed valid and invalid", "Fix__the__Bug!!123", "cursor/fix-the-bug-123"},
+		{"exactly 50 chars", "12345678901234567890123456789012345678901234567890", "cursor/12345678901234567890123456789012345678901234567890"},
+		{"51 chars truncated", "123456789012345678901234567890123456789012345678901", "cursor/12345678901234567890123456789012345678901234567890"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeBranchName(tt.input)
+			if strings.HasPrefix(tt.expected, "cursor/agent-") {
+				// For fallback cases, just verify the prefix
+				assert.True(t, strings.HasPrefix(result, "cursor/agent-"))
+			} else {
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func containsSubstring(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
