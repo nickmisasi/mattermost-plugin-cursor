@@ -3,7 +3,7 @@ import {useHistory} from 'react-router-dom';
 
 import type {Agent} from '../../types';
 import ExternalLink from '../common/ExternalLink';
-import PhaseBadge from '../common/PhaseBadge';
+import PhaseBadge, {getDisplayPhase} from '../common/PhaseBadge';
 import StatusBadge from '../common/StatusBadge';
 
 interface Props {
@@ -11,6 +11,8 @@ interface Props {
     onClick: () => void;
     onArchive?: (e: React.MouseEvent) => void;
     onUnarchive?: (e: React.MouseEvent) => void;
+    archiveLoading?: boolean;
+    unarchiveLoading?: boolean;
 }
 
 function getElapsedTime(createdAt: number): string {
@@ -30,10 +32,15 @@ function getElapsedTime(createdAt: number): string {
     return `${days}d ago`;
 }
 
-const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) => {
+const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive, archiveLoading, unarchiveLoading}) => {
     const history = useHistory();
     const elapsed = getElapsedTime(agent.created_at);
     const isAborted = agent.status === 'STOPPED' || agent.status === 'FAILED';
+    const displayPhase = getDisplayPhase(
+        agent.workflow_phase,
+        agent.review_loop_phase,
+        isAborted,
+    );
     const repoShort = agent.repository.split('/').slice(-2).join('/');
     const displayText = agent.description || agent.prompt || '';
     const promptPreview = displayText.length > 80 ?
@@ -56,12 +63,9 @@ const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) =>
             <div className='cursor-agent-card-header'>
                 <StatusBadge status={agent.status}/>
                 <span className='cursor-agent-card-repo'>{repoShort}</span>
-                {agent.workflow_phase && !(isAborted && agent.workflow_phase !== 'rejected' && agent.workflow_phase !== 'complete') && (
-                    <PhaseBadge phase={agent.workflow_phase}/>
-                )}
-                {agent.review_loop_phase && (
+                {displayPhase && (
                     <>
-                        <PhaseBadge phase={agent.review_loop_phase}/>
+                        <PhaseBadge phase={displayPhase}/>
                         {agent.review_loop_iteration && agent.review_loop_iteration > 1 && (
                             <span className='cursor-agent-card-badge'>
                                 {`iter ${agent.review_loop_iteration}`}
@@ -122,8 +126,13 @@ const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) =>
                         className='cursor-agent-card-archive-btn'
                         onClick={onArchive}
                         title='Archive agent'
+                        disabled={archiveLoading}
                     >
-                        {'Archive'}
+                        {archiveLoading ? (
+                            <span className='cursor-agent-card-archive-spinner'/>
+                        ) : (
+                            'Archive'
+                        )}
                     </button>
                 )}
                 {onUnarchive && (
@@ -131,8 +140,13 @@ const AgentCard: React.FC<Props> = ({agent, onClick, onArchive, onUnarchive}) =>
                         className='cursor-agent-card-archive-btn'
                         onClick={onUnarchive}
                         title='Unarchive agent'
+                        disabled={unarchiveLoading}
                     >
-                        {'Unarchive'}
+                        {unarchiveLoading ? (
+                            <span className='cursor-agent-card-archive-spinner'/>
+                        ) : (
+                            'Unarchive'
+                        )}
                     </button>
                 )}
             </div>

@@ -1,6 +1,6 @@
 import React from 'react';
 
-import PhaseBadge from './PhaseBadge';
+import PhaseBadge, {getDisplayPhase} from './PhaseBadge';
 
 import type {WorkflowPhase} from '../../types';
 
@@ -35,5 +35,41 @@ describe('PhaseBadge', () => {
         expect(result).not.toBeNull();
         expect(result!.props.children).toBe('Complete');
         expect(result!.props.className).toContain('cursor-phase-complete');
+    });
+});
+
+describe('getDisplayPhase', () => {
+    it('returns review loop phase when both workflow and review loop exist (avoids contradictory states)', () => {
+        // Bug 2: workflow "complete" + review "awaiting_review" must not both render
+        expect(getDisplayPhase('complete', 'awaiting_review', false)).toBe('awaiting_review');
+        expect(getDisplayPhase('implementing', 'cursor_fixing', false)).toBe('cursor_fixing');
+    });
+
+    it('returns workflow phase when only workflow exists', () => {
+        expect(getDisplayPhase('planning', undefined, false)).toBe('planning');
+        expect(getDisplayPhase('complete', undefined, false)).toBe('complete');
+    });
+
+    it('returns review loop phase when only review loop exists', () => {
+        expect(getDisplayPhase(undefined, 'awaiting_review', false)).toBe('awaiting_review');
+    });
+
+    it('hides non-terminal workflow phase when aborted', () => {
+        expect(getDisplayPhase('implementing', undefined, true)).toBeUndefined();
+        expect(getDisplayPhase('planning', undefined, true)).toBeUndefined();
+    });
+
+    it('shows terminal workflow phase when aborted', () => {
+        expect(getDisplayPhase('complete', undefined, true)).toBe('complete');
+        expect(getDisplayPhase('rejected', undefined, true)).toBe('rejected');
+    });
+
+    it('prefers review loop over workflow when aborted and both exist', () => {
+        expect(getDisplayPhase('complete', 'awaiting_review', true)).toBe('awaiting_review');
+    });
+
+    it('returns undefined when neither phase exists', () => {
+        expect(getDisplayPhase(undefined, undefined, false)).toBeUndefined();
+        expect(getDisplayPhase(undefined, undefined, true)).toBeUndefined();
     });
 });
