@@ -232,8 +232,15 @@ const AgentDetail: React.FC<Props> = ({agent, onBack}) => {
 
                 {agent.branch && (
                     <div className='cursor-agent-detail-section'>
-                        <div className='cursor-agent-detail-label'>{'Branch'}</div>
+                        <div className='cursor-agent-detail-label'>{'Base Branch'}</div>
                         <div className='cursor-agent-detail-value'>{agent.branch}</div>
+                    </div>
+                )}
+
+                {agent.target_branch && (
+                    <div className='cursor-agent-detail-section'>
+                        <div className='cursor-agent-detail-label'>{'Created Branch'}</div>
+                        <div className='cursor-agent-detail-value'>{agent.target_branch}</div>
                     </div>
                 )}
 

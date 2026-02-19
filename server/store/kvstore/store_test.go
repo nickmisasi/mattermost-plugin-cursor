@@ -557,6 +557,114 @@ func TestSaveAndGetReviewLoop(t *testing.T) {
 	api.AssertExpectations(t)
 }
 
+func TestSaveAndGetReviewLoopWithFeedbackFields(t *testing.T) {
+	s, api := setupStore(t)
+
+	loop := &ReviewLoop{
+		ID:                      "rl-feedback",
+		AgentRecordID:           "agent-feedback",
+		UserID:                  "user-1",
+		ChannelID:               "ch-1",
+		RootPostID:              "root-1",
+		TriggerPostID:           "trigger-1",
+		PRURL:                   "https://github.com/org/repo/pull/77",
+		PRNumber:                77,
+		Repository:              "org/repo",
+		Owner:                   "org",
+		Repo:                    "repo",
+		Phase:                   ReviewPhaseCursorFixing,
+		Iteration:               3,
+		LastCommitSHA:           "abc123",
+		LastFeedbackDispatchAt:  1700000000000,
+		LastFeedbackDispatchSHA: "abc123",
+		LastFeedbackDigest:      "digest-1",
+		FeedbackCursor:          "cursor-1",
+		Findings: []ReviewFinding{
+			{
+				Key:                "finding-1",
+				Status:             "open",
+				SourceType:         "review_comment",
+				SourceID:           1234,
+				SourceNodeID:       "PRRC_kwDOA1234",
+				SourceURL:          "https://github.com/org/repo/pull/77#discussion_r1234",
+				ReviewerLogin:      "coderabbitai[bot]",
+				ReviewerType:       "ai_bot",
+				Path:               "server/api.go",
+				Line:               42,
+				CommitSHA:          "abc123",
+				RawText:            "Potential nil pointer dereference",
+				ActionableText:     "Guard against nil before dereference",
+				FirstSeenAt:        1700000000000,
+				LastSeenAt:         1700000005000,
+				FirstSeenIteration: 2,
+				LastSeenIteration:  3,
+			},
+		},
+		CreatedAt: 1700000000000,
+		UpdatedAt: 1700000005000,
+	}
+
+	mockKVSet(api, prefixReviewLoop+"rl-feedback", mustJSON(t, loop))
+	mockKVSet(api, prefixRLByPR+"https://github.com/org/repo/pull/77", mustJSON(t, "rl-feedback"))
+	mockKVSet(api, prefixRLByAgent+"agent-feedback", mustJSON(t, "rl-feedback"))
+	mockKVDelete(api, prefixFinishedWithPR+"agent-feedback")
+
+	err := s.SaveReviewLoop(loop)
+	require.NoError(t, err)
+
+	api.On("KVGet", prefixReviewLoop+"rl-feedback").Return(mustJSON(t, loop), nil)
+
+	got, err := s.GetReviewLoop("rl-feedback")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, int64(1700000000000), got.LastFeedbackDispatchAt)
+	assert.Equal(t, "abc123", got.LastFeedbackDispatchSHA)
+	assert.Equal(t, "digest-1", got.LastFeedbackDigest)
+	assert.Equal(t, "cursor-1", got.FeedbackCursor)
+	require.Len(t, got.Findings, 1)
+	assert.Equal(t, "finding-1", got.Findings[0].Key)
+	assert.Equal(t, "review_comment", got.Findings[0].SourceType)
+	assert.Equal(t, 42, got.Findings[0].Line)
+	assert.Equal(t, "Guard against nil before dereference", got.Findings[0].ActionableText)
+	api.AssertExpectations(t)
+}
+
+func TestGetReviewLoop_BackwardCompatibleWithoutFeedbackFields(t *testing.T) {
+	s, api := setupStore(t)
+
+	legacyLoop := map[string]any{
+		"id":            "rl-legacy",
+		"agentRecordId": "agent-legacy",
+		"userId":        "user-1",
+		"channelId":     "ch-1",
+		"rootPostId":    "root-1",
+		"triggerPostId": "trigger-1",
+		"prUrl":         "https://github.com/org/repo/pull/88",
+		"prNumber":      88,
+		"repository":    "org/repo",
+		"owner":         "org",
+		"repo":          "repo",
+		"phase":         ReviewPhaseAwaitingReview,
+		"iteration":     1,
+		"createdAt":     1700000000000,
+		"updatedAt":     1700000001000,
+	}
+
+	api.On("KVGet", prefixReviewLoop+"rl-legacy").Return(mustJSON(t, legacyLoop), nil)
+
+	got, err := s.GetReviewLoop("rl-legacy")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "rl-legacy", got.ID)
+	assert.Equal(t, ReviewPhaseAwaitingReview, got.Phase)
+	assert.Zero(t, got.LastFeedbackDispatchAt)
+	assert.Empty(t, got.LastFeedbackDispatchSHA)
+	assert.Empty(t, got.LastFeedbackDigest)
+	assert.Empty(t, got.FeedbackCursor)
+	assert.Nil(t, got.Findings)
+	api.AssertExpectations(t)
+}
+
 func TestGetNonExistentReviewLoop(t *testing.T) {
 	s, api := setupStore(t)
 

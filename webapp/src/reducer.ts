@@ -50,6 +50,7 @@ export default function reducer(state: PluginState = initialState, action: Plugi
                     status: action.data.status,
                     pr_url: action.data.pr_url || existing.pr_url,
                     summary: action.data.summary || existing.summary,
+                    target_branch: action.data.target_branch !== undefined ? action.data.target_branch : existing.target_branch,
                     updated_at: action.data.updated_at,
                 },
             },

@@ -108,7 +108,7 @@
                 "key": "GitHubPAT",
                 "display_name": "GitHub Personal Access Token",
                 "type": "text",
-                "help_text": "Fine-grained PAT with pull_requests:write scope. Required for the AI review loop to request reviewers and post comments on PRs.",
+                "help_text": "Fine-grained PAT with pull_requests:write scope. Required for the AI review loop to request reviewers and read PR review feedback.",
                 "placeholder": "github_pat_...",
                 "secret": true
             },
@@ -116,7 +116,7 @@
                 "key": "EnableAIReviewLoop",
                 "display_name": "Enable AI Review Loop",
                 "type": "bool",
-                "help_text": "When enabled, completed agents with PRs automatically get AI reviews (CodeRabbit + Copilot). Feedback is sent back to Cursor for fixes. Requires both Cursor API Key and GitHub PAT.",
+                "help_text": "When enabled, completed agents with PRs automatically get AI reviews (CodeRabbit + Copilot). Actionable feedback is sent to Cursor using direct follow-up dispatch for fixes. Requires both Cursor API Key and GitHub PAT.",
                 "default": false
             },
             {

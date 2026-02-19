@@ -103,6 +103,7 @@ func TestGetAgents_Success(t *testing.T) {
 			Status:        "RUNNING",
 			Repository:    "org/repo",
 			Branch:        "main",
+			TargetBranch:  "cursor/fix-login",
 			ChannelID:     "ch-1",
 			PostID:        "post-1",
 			UserID:        "user-1",
@@ -131,6 +132,7 @@ func TestGetAgents_Success(t *testing.T) {
 	assert.Len(t, resp.Agents, 2)
 	assert.Equal(t, "agent-1", resp.Agents[0].ID)
 	assert.Equal(t, "RUNNING", resp.Agents[0].Status)
+	assert.Equal(t, "cursor/fix-login", resp.Agents[0].TargetBranch)
 	assert.Equal(t, "post-1", resp.Agents[0].RootPostID)
 	assert.Equal(t, "agent-2", resp.Agents[1].ID)
 	assert.Equal(t, "https://github.com/org/repo2/pull/1", resp.Agents[1].PrURL)
@@ -171,6 +173,7 @@ func TestGetAgent_Success(t *testing.T) {
 		Status:        "RUNNING",
 		Repository:    "org/repo",
 		Branch:        "main",
+		TargetBranch:  "cursor/fix-login",
 		ChannelID:     "ch-1",
 		PostID:        "post-1",
 		UserID:        "user-1",
@@ -191,6 +194,7 @@ func TestGetAgent_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, "agent-1", resp.ID)
 	assert.Equal(t, "RUNNING", resp.Status)
+	assert.Equal(t, "cursor/fix-login", resp.TargetBranch)
 	assert.Equal(t, "https://cursor.com/agents/agent-1", resp.CursorURL)
 	assert.Equal(t, "post-1", resp.RootPostID)
 }
@@ -232,10 +236,15 @@ func TestGetAgent_RefreshesStatusFromCursor(t *testing.T) {
 	cursorClient.On("GetAgent", mock.Anything, "agent-1").Return(&cursor.Agent{
 		ID:     "agent-1",
 		Status: cursor.AgentStatusFinished,
-		Target: cursor.AgentTarget{PrURL: "https://github.com/org/repo/pull/99"},
+		Target: cursor.AgentTarget{
+			PrURL:      "https://github.com/org/repo/pull/99",
+			BranchName: "cursor/fix-login",
+		},
 	}, nil)
 	store.On("SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {
-		return r.Status == "FINISHED" && r.PrURL == "https://github.com/org/repo/pull/99"
+		return r.Status == "FINISHED" &&
+			r.PrURL == "https://github.com/org/repo/pull/99" &&
+			r.TargetBranch == "cursor/fix-login"
 	})).Return(nil)
 	store.On("GetWorkflowByAgent", "agent-1").Return("", nil)
 	store.On("GetReviewLoopByAgent", "agent-1").Return(nil, nil)
@@ -247,6 +256,7 @@ func TestGetAgent_RefreshesStatusFromCursor(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, "FINISHED", resp.Status)
 	assert.Equal(t, "https://github.com/org/repo/pull/99", resp.PrURL)
+	assert.Equal(t, "cursor/fix-login", resp.TargetBranch)
 }
 
 func TestGetAgent_TerminalStatus_SkipsRefresh(t *testing.T) {
@@ -1067,7 +1077,8 @@ func TestGetReviewLoop_Success(t *testing.T) {
 		LastCommitSHA: "abc123",
 		History: []kvstore.ReviewLoopEvent{
 			{Phase: kvstore.ReviewPhaseRequestingReview, Timestamp: 1000, Detail: "Review requested"},
-			{Phase: kvstore.ReviewPhaseAwaitingReview, Timestamp: 2000},
+			{Phase: kvstore.ReviewPhaseAwaitingReview, Timestamp: 1500, Detail: "Iteration 3 (direct follow-up dispatched; 2 new, 1 repeated, 4 dismissed)"},
+			{Phase: kvstore.ReviewPhaseCursorFixing, Timestamp: 2000},
 		},
 		CreatedAt: 1000,
 		UpdatedAt: 2000,
@@ -1087,10 +1098,13 @@ func TestGetReviewLoop_Success(t *testing.T) {
 	assert.Equal(t, kvstore.ReviewPhaseAwaitingReview, resp.Phase)
 	assert.Equal(t, 2, resp.Iteration)
 	assert.Equal(t, "abc123", resp.LastCommitSHA)
-	assert.Len(t, resp.History, 2)
+	assert.Len(t, resp.History, 3)
 	assert.Equal(t, kvstore.ReviewPhaseRequestingReview, resp.History[0].Phase)
 	assert.Equal(t, "Review requested", resp.History[0].Detail)
 	assert.Equal(t, int64(1000), resp.History[0].Timestamp)
+	assert.Equal(t, "Iteration 3 (direct follow-up dispatched; 2 new, 1 repeated, 4 dismissed)", resp.History[1].Detail)
+	assert.Equal(t, kvstore.ReviewPhaseCursorFixing, resp.History[2].Phase)
+	assert.Empty(t, resp.History[2].Detail)
 }
 
 func TestGetReviewLoop_NotFound(t *testing.T) {
@@ -1199,6 +1213,7 @@ func TestHandleGetAgent_BackfillsPrURL(t *testing.T) {
 	var resp AgentResponse
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
 	assert.Equal(t, "https://github.com/org/repo/pull/42", resp.PrURL)
+	assert.Equal(t, "cursor/fix-login", resp.TargetBranch)
 
 	// Verify SaveAgent was called.
 	store.AssertCalled(t, "SaveAgent", mock.MatchedBy(func(r *kvstore.AgentRecord) bool {

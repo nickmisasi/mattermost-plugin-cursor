@@ -27,6 +27,7 @@ export interface Agent {
     status: AgentStatus;
     repository: string;
     branch: string;
+    target_branch?: string;
     prompt: string;
     description?: string;
     pr_url: string;
@@ -99,6 +100,7 @@ export interface AgentStatusChangeEvent {
     pr_url: string;
     summary: string;
     repository: string;
+    target_branch?: string;
     updated_at: string;
 }
 
@@ -108,6 +110,7 @@ export interface AgentCreatedEvent {
     status: AgentStatus;
     repository: string;
     branch: string;
+    target_branch?: string;
     prompt: string;
     description?: string;
     channel_id: string;

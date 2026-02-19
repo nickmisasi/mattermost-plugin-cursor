@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,13 @@ type Client interface {
 
 	// ListReviewComments returns all inline review comments on a PR (auto-paginates).
 	ListReviewComments(ctx context.Context, owner, repo string, prNumber int) ([]*github.PullRequestComment, error)
+
+	// ListIssueComments returns all issue comments on a PR issue (auto-paginates).
+	ListIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]*github.IssueComment, error)
+
+	// ReplyToReviewComment replies to a pull request review comment.
+	// It prefers the dedicated replies endpoint, then falls back to in_reply_to.
+	ReplyToReviewComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) (*github.PullRequestComment, error)
 
 	// MarkPRReadyForReview transitions a draft PR to ready-for-review.
 	// This is required because Cursor creates PRs as drafts, and AI reviewers
@@ -195,6 +203,98 @@ func (c *clientImpl) ListReviewComments(ctx context.Context, owner, repo string,
 		opts.Page = resp.NextPage
 	}
 	return all, nil
+}
+
+func (c *clientImpl) ListIssueComments(ctx context.Context, owner, repo string, issueNumber int) ([]*github.IssueComment, error) {
+	var all []*github.IssueComment
+	opts := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	for {
+		comments, resp, err := c.gh.Issues.ListComments(ctx, owner, repo, issueNumber, opts)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, comments...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return all, nil
+}
+
+func (c *clientImpl) ReplyToReviewComment(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) (*github.PullRequestComment, error) {
+	comment, preferredErr := c.replyToReviewCommentViaRepliesEndpoint(ctx, owner, repo, prNumber, commentID, body)
+	if preferredErr == nil {
+		return comment, nil
+	}
+
+	if !shouldFallbackToInReplyTo(preferredErr) {
+		return nil, fmt.Errorf("reply to review comment failed (preferred: %w)", preferredErr)
+	}
+
+	comment, fallbackErr := c.replyToReviewCommentViaInReplyTo(ctx, owner, repo, prNumber, commentID, body)
+	if fallbackErr == nil {
+		return comment, nil
+	}
+
+	return nil, fmt.Errorf("reply to review comment failed (preferred: %v, fallback: %w)", preferredErr, fallbackErr)
+}
+
+func shouldFallbackToInReplyTo(err error) bool {
+	// Do not retry on canceled/expired contexts; caller controls retry behavior.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	var ghErr *github.ErrorResponse
+	if !errors.As(err, &ghErr) || ghErr.Response == nil {
+		return false
+	}
+
+	switch ghErr.Response.StatusCode {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
+		// Compatibility errors: preferred endpoint may be unavailable.
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *clientImpl) replyToReviewCommentViaRepliesEndpoint(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) (*github.PullRequestComment, error) {
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, prNumber, commentID)
+	req, err := c.gh.NewRequest(http.MethodPost, path, map[string]any{
+		"body": body,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var comment github.PullRequestComment
+	_, err = c.gh.Do(ctx, req, &comment)
+	if err != nil {
+		return nil, err
+	}
+	return &comment, nil
+}
+
+func (c *clientImpl) replyToReviewCommentViaInReplyTo(ctx context.Context, owner, repo string, prNumber int, commentID int64, body string) (*github.PullRequestComment, error) {
+	path := fmt.Sprintf("repos/%s/%s/pulls/%d/comments", owner, repo, prNumber)
+	req, err := c.gh.NewRequest(http.MethodPost, path, map[string]any{
+		"body":        body,
+		"in_reply_to": commentID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var comment github.PullRequestComment
+	_, err = c.gh.Do(ctx, req, &comment)
+	if err != nil {
+		return nil, err
+	}
+	return &comment, nil
 }
 
 func (c *clientImpl) GetPullRequestByBranch(ctx context.Context, owner, repo, branch string) (*github.PullRequest, error) {

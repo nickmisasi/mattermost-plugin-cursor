@@ -97,6 +97,26 @@ type ImageRef struct {
 
 // ReviewLoop tracks the automated AI review cycle for a Cursor-created PR.
 // Separate from AgentRecord and HITLWorkflow. Linked back via AgentRecordID.
+type ReviewFinding struct {
+	Key                string `json:"key,omitempty"`                // Stable fingerprint for dedupe tracking
+	Status             string `json:"status,omitempty"`             // open|resolved|dismissed|superseded
+	SourceType         string `json:"sourceType,omitempty"`         // review_comment|review_body|issue_comment
+	SourceID           int64  `json:"sourceId,omitempty"`           // Numeric source comment/review ID
+	SourceNodeID       string `json:"sourceNodeId,omitempty"`       // GitHub node ID for traceability
+	SourceURL          string `json:"sourceUrl,omitempty"`          // GitHub HTML URL
+	ReviewerLogin      string `json:"reviewerLogin,omitempty"`      // GitHub login of feedback author
+	ReviewerType       string `json:"reviewerType,omitempty"`       // ai_bot|human
+	Path               string `json:"path,omitempty"`               // File path for inline comments
+	Line               int    `json:"line,omitempty"`               // File line for inline comments
+	CommitSHA          string `json:"commitSha,omitempty"`          // Commit SHA associated with finding
+	RawText            string `json:"rawText,omitempty"`            // Raw reviewer text (may be truncated)
+	ActionableText     string `json:"actionableText,omitempty"`     // Extracted actionable directive
+	FirstSeenAt        int64  `json:"firstSeenAt,omitempty"`        // Unix millis
+	LastSeenAt         int64  `json:"lastSeenAt,omitempty"`         // Unix millis
+	FirstSeenIteration int    `json:"firstSeenIteration,omitempty"` // Review-loop iteration first observed
+	LastSeenIteration  int    `json:"lastSeenIteration,omitempty"`  // Review-loop iteration last observed
+}
+
 type ReviewLoop struct {
 	ID            string `json:"id"`                   // UUID primary key
 	AgentRecordID string `json:"agentRecordId"`        // Agent that created the PR
@@ -119,6 +139,13 @@ type ReviewLoop struct {
 
 	// Tracking
 	LastCommitSHA string `json:"lastCommitSha,omitempty"` // HEAD SHA we last saw
+
+	// Feedback dispatch tracking (Phase 1 data plumbing only)
+	LastFeedbackDispatchAt  int64           `json:"lastFeedbackDispatchAt,omitempty"`  // Unix millis
+	LastFeedbackDispatchSHA string          `json:"lastFeedbackDispatchSha,omitempty"` // SHA used for last dispatched bundle
+	LastFeedbackDigest      string          `json:"lastFeedbackDigest,omitempty"`      // Digest for idempotency checks
+	FeedbackCursor          string          `json:"feedbackCursor,omitempty"`          // Reserved for paging/cursor strategies
+	Findings                []ReviewFinding `json:"findings,omitempty"`                // Persisted bounded finding history
 
 	// Timeline (append-only log of phase transitions for dashboard display)
 	History []ReviewLoopEvent `json:"history,omitempty"`
@@ -148,7 +175,7 @@ const (
 const (
 	ReviewPhaseRequestingReview = "requesting_review" // Just requested AI reviewers
 	ReviewPhaseAwaitingReview   = "awaiting_review"   // Waiting for CodeRabbit/Copilot
-	ReviewPhaseCursorFixing     = "cursor_fixing"     // Posted @cursor comment, waiting for fix
+	ReviewPhaseCursorFixing     = "cursor_fixing"     // Feedback dispatched, waiting for Cursor fixes
 	ReviewPhaseApproved         = "approved"          // CodeRabbit approved
 	ReviewPhaseHumanReview      = "human_review"      // Human reviewers assigned
 	ReviewPhaseComplete         = "complete"          // Human approved (terminal)

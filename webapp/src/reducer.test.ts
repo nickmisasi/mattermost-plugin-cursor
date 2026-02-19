@@ -124,7 +124,7 @@ describe('reducer', () => {
     it('handles AGENT_STATUS_CHANGED for existing agent', () => {
         const prevState: PluginState = {
             ...initialState,
-            agents: {a1: makeAgent({id: 'a1', status: 'RUNNING'})},
+            agents: {a1: makeAgent({id: 'a1', status: 'RUNNING', target_branch: 'cursor/fix-login'})},
         };
         const state = reducer(prevState, {
             type: AGENT_STATUS_CHANGED,
@@ -133,13 +133,52 @@ describe('reducer', () => {
                 status: 'FINISHED',
                 pr_url: 'https://github.com/pr/1',
                 summary: 'Done',
+                target_branch: 'cursor/fix-login-v2',
                 updated_at: 2000,
             },
         });
         expect(state.agents.a1.status).toBe('FINISHED');
         expect(state.agents.a1.pr_url).toBe('https://github.com/pr/1');
         expect(state.agents.a1.summary).toBe('Done');
+        expect(state.agents.a1.target_branch).toBe('cursor/fix-login-v2');
         expect(state.agents.a1.updated_at).toBe(2000);
+    });
+
+    it('AGENT_STATUS_CHANGED preserves target_branch when omitted', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {a1: makeAgent({id: 'a1', status: 'RUNNING', target_branch: 'cursor/fix-login'})},
+        };
+        const state = reducer(prevState, {
+            type: AGENT_STATUS_CHANGED,
+            data: {
+                agent_id: 'a1',
+                status: 'FINISHED',
+                pr_url: '',
+                summary: 'Done',
+                updated_at: 2000,
+            },
+        });
+        expect(state.agents.a1.target_branch).toBe('cursor/fix-login');
+    });
+
+    it('AGENT_STATUS_CHANGED clears target_branch when set to empty string', () => {
+        const prevState: PluginState = {
+            ...initialState,
+            agents: {a1: makeAgent({id: 'a1', status: 'RUNNING', target_branch: 'cursor/fix-login'})},
+        };
+        const state = reducer(prevState, {
+            type: AGENT_STATUS_CHANGED,
+            data: {
+                agent_id: 'a1',
+                status: 'FINISHED',
+                pr_url: '',
+                summary: 'Done',
+                target_branch: '',
+                updated_at: 2000,
+            },
+        });
+        expect(state.agents.a1.target_branch).toBe('');
     });
 
     it('AGENT_STATUS_CHANGED ignores unknown agent', () => {
@@ -157,13 +196,14 @@ describe('reducer', () => {
     });
 
     it('handles AGENT_CREATED', () => {
-        const agent = makeAgent({id: 'new-agent', status: 'CREATING'});
+        const agent = makeAgent({id: 'new-agent', status: 'CREATING', target_branch: 'cursor/fix-login'});
         const state = reducer(initialState, {
             type: AGENT_CREATED,
             data: agent,
         });
         expect(state.agents['new-agent']).toBeDefined();
         expect(state.agents['new-agent'].status).toBe('CREATING');
+        expect(state.agents['new-agent'].target_branch).toBe('cursor/fix-login');
     });
 
     it('handles AGENT_REMOVED', () => {
@@ -413,6 +453,19 @@ describe('reducer', () => {
         expect(state.reviewLoops['rl-1']).toEqual(rl);
     });
 
+    it('REVIEW_LOOP_RECEIVED preserves enriched history detail strings', () => {
+        const detail = 'Iteration 2 (direct follow-up dispatched; 1 new, 0 repeated, 2 dismissed)';
+        const rl = makeReviewLoop({
+            id: 'rl-1',
+            history: [{phase: 'cursor_fixing', timestamp: 1500, detail}],
+        });
+        const state = reducer(initialState, {
+            type: REVIEW_LOOP_RECEIVED,
+            data: rl,
+        });
+        expect(state.reviewLoops['rl-1'].history[0].detail).toBe(detail);
+    });
+
     it('REVIEW_LOOP_RECEIVED adds to existing review loops', () => {
         const prevState: PluginState = {
             ...initialState,
@@ -478,6 +531,31 @@ describe('reducer', () => {
             },
         });
         expect(state.reviewLoops['rl-1'].pr_url).toBe('https://github.com/org/repo/pull/1');
+    });
+
+    it('REVIEW_LOOP_CHANGED keeps existing history when websocket payload omits it', () => {
+        const detail = 'Failed to dispatch review feedback; manual intervention required (0 new, 3 repeated, 1 dismissed)';
+        const prevState: PluginState = {
+            ...initialState,
+            reviewLoops: {
+                'rl-1': makeReviewLoop({
+                    id: 'rl-1',
+                    history: [{phase: 'cursor_fixing', timestamp: 2500, detail}],
+                }),
+            },
+        };
+        const state = reducer(prevState, {
+            type: REVIEW_LOOP_CHANGED,
+            data: {
+                review_loop_id: 'rl-1',
+                agent_record_id: 'agent-1',
+                phase: 'awaiting_review',
+                iteration: 5,
+                pr_url: 'https://github.com/org/repo/pull/1',
+                updated_at: 3000,
+            },
+        });
+        expect(state.reviewLoops['rl-1'].history).toEqual(prevState.reviewLoops['rl-1'].history);
     });
 
     it('REVIEW_LOOP_CHANGED propagates phase to associated agent', () => {

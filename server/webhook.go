@@ -397,36 +397,45 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 		return
 	}
 
-	// --- Review Loop: Check for human review completion ---
-	// If this is NOT an AI bot, check if the PR has an active review loop in human_review phase.
-	if !p.isAIReviewerBot(event.Review.User.Login) {
-		loop := p.ensureReviewLoop(event.PullRequest.HTMLURL)
-		if loop != nil && loop.Phase == kvstore.ReviewPhaseHumanReview &&
-			strings.EqualFold(event.Review.State, reviewStateApproved) {
-			if err := p.handleHumanReviewApproval(loop, event.Review.User.Login); err != nil {
-				p.API.LogError("Failed to handle human review approval",
-					"error", err.Error(),
-					"review_loop_id", loop.ID,
-				)
+	// --- Review Loop phase-aware gating ---
+	reviewerType := p.reviewerTypeForLogin(event.Review.User.Login)
+	loop := p.ensureReviewLoop(event.PullRequest.HTMLURL)
+	if loop != nil {
+		switch loop.Phase {
+		case kvstore.ReviewPhaseAwaitingReview:
+			// AI reviews in awaiting_review drive CodeRabbit gate + fix iterations.
+			if reviewerType == reviewerTypeAIBot {
+				if err := p.handleAIReview(loop, event.Review, event.PullRequest); err != nil {
+					p.API.LogError("Failed to handle AI review",
+						"error", err.Error(),
+						"review_loop_id", loop.ID,
+					)
+				}
+				w.WriteHeader(http.StatusOK)
+				return
 			}
-			// Still fall through to normal notification handling below.
-		}
-	}
-
-	// --- Review Loop: Check if this is an AI reviewer bot ---
-	if p.isAIReviewerBot(event.Review.User.Login) {
-		loop := p.ensureReviewLoop(event.PullRequest.HTMLURL)
-		if loop != nil && loop.Phase == kvstore.ReviewPhaseAwaitingReview {
-			if err := p.handleAIReview(loop, event.Review, event.PullRequest); err != nil {
-				p.API.LogError("Failed to handle AI review",
-					"error", err.Error(),
-					"review_loop_id", loop.ID,
-				)
+		case kvstore.ReviewPhaseHumanReview:
+			// Human approval is terminal; human commented/changes_requested now
+			// trigger another cursor_fixing iteration.
+			if reviewerType == reviewerTypeHuman {
+				if strings.EqualFold(event.Review.State, reviewStateApproved) {
+					if err := p.handleHumanReviewApproval(loop, event.Review.User.Login); err != nil {
+						p.API.LogError("Failed to handle human review approval",
+							"error", err.Error(),
+							"review_loop_id", loop.ID,
+						)
+					}
+				} else if strings.EqualFold(event.Review.State, reviewStateCommented) ||
+					strings.EqualFold(event.Review.State, reviewStateChangesRequested) {
+					if err := p.handleHumanReviewFeedback(loop, event.Review, event.PullRequest); err != nil {
+						p.API.LogError("Failed to handle human review feedback",
+							"error", err.Error(),
+							"review_loop_id", loop.ID,
+						)
+					}
+				}
 			}
-			w.WriteHeader(http.StatusOK)
-			return
 		}
-		// If loop exists but not in awaiting_review phase, fall through to notification.
 	}
 
 	// --- Existing: Look up the agent and post notification ---

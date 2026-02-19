@@ -120,6 +120,141 @@ func TestListReviewComments(t *testing.T) {
 	assert.Equal(t, "main.go", comments[0].GetPath())
 }
 
+func TestListIssueComments(t *testing.T) {
+	client, mux, _ := setup(t)
+
+	page := 0
+	mux.HandleFunc("/repos/owner/repo/issues/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		page++
+
+		switch page {
+		case 1:
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s%s/repos/owner/repo/issues/42/comments?page=2>; rel="next"`, r.Host, baseURLPath))
+			_, _ = fmt.Fprint(w, `[{"id":1,"body":"first","user":{"login":"coderabbitai[bot]"}}]`)
+		case 2:
+			_, _ = fmt.Fprint(w, `[{"id":2,"body":"second","user":{"login":"copilot-pull-request-reviewer"}}]`)
+		default:
+			t.Fatal("unexpected page request")
+		}
+	})
+
+	comments, err := client.ListIssueComments(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
+	assert.Len(t, comments, 2)
+	assert.Equal(t, "first", comments[0].GetBody())
+	assert.Equal(t, "second", comments[1].GetBody())
+}
+
+func TestReplyToReviewComment_PreferredEndpointSuccess(t *testing.T) {
+	client, mux, _ := setup(t)
+
+	preferredCalls := 0
+	fallbackCalls := 0
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments/101/replies", func(w http.ResponseWriter, r *http.Request) {
+		preferredCalls++
+		assert.Equal(t, http.MethodPost, r.Method)
+
+		var body map[string]string
+		err := json.NewDecoder(r.Body).Decode(&body)
+		require.NoError(t, err)
+		assert.Equal(t, "Thanks, fixed.", body["body"])
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprint(w, `{"id":501,"body":"Thanks, fixed.","in_reply_to_id":101}`)
+	})
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		t.Fatalf("fallback endpoint should not be called in preferred success case")
+	})
+
+	comment, err := client.ReplyToReviewComment(context.Background(), "owner", "repo", 42, 101, "Thanks, fixed.")
+	require.NoError(t, err)
+	require.NotNil(t, comment)
+	assert.Equal(t, int64(501), comment.GetID())
+	assert.Equal(t, 1, preferredCalls)
+	assert.Equal(t, 0, fallbackCalls)
+}
+
+func TestReplyToReviewComment_FallsBackToInReplyToEndpoint(t *testing.T) {
+	client, mux, _ := setup(t)
+
+	preferredCalls := 0
+	fallbackCalls := 0
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments/101/replies", func(w http.ResponseWriter, r *http.Request) {
+		preferredCalls++
+		assert.Equal(t, http.MethodPost, r.Method)
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	})
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		assert.Equal(t, http.MethodPost, r.Method)
+
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		require.NoError(t, err)
+		assert.Equal(t, "Thanks, fixed.", body["body"])
+		assert.Equal(t, float64(101), body["in_reply_to"])
+
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprint(w, `{"id":601,"body":"Thanks, fixed.","in_reply_to_id":101}`)
+	})
+
+	comment, err := client.ReplyToReviewComment(context.Background(), "owner", "repo", 42, 101, "Thanks, fixed.")
+	require.NoError(t, err)
+	require.NotNil(t, comment)
+	assert.Equal(t, int64(601), comment.GetID())
+	assert.Equal(t, 1, preferredCalls)
+	assert.Equal(t, 1, fallbackCalls)
+}
+
+func TestReplyToReviewComment_ReturnsErrorWhenAllEndpointsFail(t *testing.T) {
+	client, mux, _ := setup(t)
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments/101/replies", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	})
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		http.Error(w, `{"message":"validation failed"}`, http.StatusUnprocessableEntity)
+	})
+
+	comment, err := client.ReplyToReviewComment(context.Background(), "owner", "repo", 42, 101, "Thanks, fixed.")
+	require.Error(t, err)
+	assert.Nil(t, comment)
+	assert.Contains(t, err.Error(), "reply to review comment failed")
+	assert.Contains(t, err.Error(), "preferred")
+	assert.Contains(t, err.Error(), "fallback")
+}
+
+func TestReplyToReviewComment_DoesNotFallbackOnPreferredServerError(t *testing.T) {
+	client, mux, _ := setup(t)
+
+	fallbackCalls := 0
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments/101/replies", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		http.Error(w, `{"message":"server error"}`, http.StatusInternalServerError)
+	})
+
+	mux.HandleFunc("/repos/owner/repo/pulls/42/comments", func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		t.Fatalf("fallback endpoint should not be called for preferred 5xx errors")
+	})
+
+	comment, err := client.ReplyToReviewComment(context.Background(), "owner", "repo", 42, 101, "Thanks, fixed.")
+	require.Error(t, err)
+	assert.Nil(t, comment)
+	assert.Contains(t, err.Error(), "preferred")
+	assert.Equal(t, 0, fallbackCalls)
+}
+
 func TestParsePRURL(t *testing.T) {
 	tests := []struct {
 		name    string

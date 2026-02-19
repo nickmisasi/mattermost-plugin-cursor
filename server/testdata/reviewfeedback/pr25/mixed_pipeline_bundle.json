@@ -1,0 +1,113 @@
+{
+  "review_comments": [
+    {
+      "id": 1001,
+      "node_id": "PRRC_kwDOA1001",
+      "url": "https://github.com/org/repo/pull/42#discussion_r1001",
+      "reviewer_login": "coderabbitai[bot]",
+      "path": "server/reviewloop_feedback.go",
+      "line": 144,
+      "commit_sha": "sha-current-001",
+      "body_fixture": "coderabbit_review_comment_prompt.md"
+    },
+    {
+      "id": 1002,
+      "node_id": "PRRC_kwDOA1002",
+      "url": "https://github.com/org/repo/pull/42#discussion_r1002",
+      "reviewer_login": "coderabbitai[bot]",
+      "path": "server/reviewloop_feedback.go",
+      "line": 33,
+      "commit_sha": "sha-stale-000",
+      "body": "Prompt for AI Agents\nStale commit comment should be filtered before extraction."
+    },
+    {
+      "id": 1003,
+      "node_id": "PRRC_kwDOA1003",
+      "url": "https://github.com/org/repo/pull/42#discussion_r1003",
+      "reviewer_login": "copilot-pull-request-reviewer",
+      "path": "server/api.go",
+      "line": 77,
+      "commit_sha": "sha-current-001",
+      "body_fixture": "noncoderabbit_inline_review_comment.md"
+    },
+    {
+      "id": 1004,
+      "node_id": "PRRC_kwDOA1004",
+      "url": "https://github.com/org/repo/pull/42#discussion_r1004",
+      "reviewer_login": "human-reviewer",
+      "path": "server/webhook.go",
+      "line": 51,
+      "commit_sha": "sha-current-001",
+      "body_fixture": "noncoderabbit_inline_review_comment.md"
+    },
+    {
+      "id": 1005,
+      "node_id": "PRRC_kwDOA1005",
+      "url": "https://github.com/org/repo/pull/42#discussion_r1005",
+      "reviewer_login": "copilot-pull-request-reviewer",
+      "path": "server/reviewloop.go",
+      "line": 66,
+      "commit_sha": "sha-current-001",
+      "body": " \n\t "
+    },
+    {
+      "id": 1006,
+      "node_id": "PRRC_kwDOA1006",
+      "url": "https://github.com/org/repo/pull/42#discussion_r1006",
+      "reviewer_login": "copilot-pull-request-reviewer",
+      "path": "server/reviewloop.go",
+      "line": 67,
+      "commit_sha": "sha-current-001",
+      "body": "LGTM"
+    }
+  ],
+  "reviews": [
+    {
+      "id": 2001,
+      "node_id": "PRR_kwDOA2001",
+      "url": "https://github.com/org/repo/pull/42#pullrequestreview-2001",
+      "reviewer_login": "coderabbitai[bot]",
+      "commit_sha": "sha-current-001",
+      "body_fixture": "coderabbit_review_body_prompt.md"
+    },
+    {
+      "id": 2002,
+      "node_id": "PRR_kwDOA2002",
+      "url": "https://github.com/org/repo/pull/42#pullrequestreview-2002",
+      "reviewer_login": "copilot-pull-request-reviewer",
+      "commit_sha": "sha-current-001",
+      "body_fixture": "noncoderabbit_noninline_review_body.md"
+    },
+    {
+      "id": 2003,
+      "node_id": "PRR_kwDOA2003",
+      "url": "https://github.com/org/repo/pull/42#pullrequestreview-2003",
+      "reviewer_login": "human-reviewer",
+      "commit_sha": "sha-current-001",
+      "body_fixture": "noncoderabbit_noninline_review_body.md"
+    }
+  ],
+  "issue_comments": [
+    {
+      "id": 3001,
+      "node_id": "IC_kwDOA3001",
+      "url": "https://github.com/org/repo/pull/42#issuecomment-3001",
+      "reviewer_login": "coderabbitai[bot]",
+      "body_fixture": "coderabbit_issue_comment_noise.md"
+    },
+    {
+      "id": 3002,
+      "node_id": "IC_kwDOA3002",
+      "url": "https://github.com/org/repo/pull/42#issuecomment-3002",
+      "reviewer_login": "copilot-pull-request-reviewer",
+      "body": "Please add a changelog entry."
+    },
+    {
+      "id": 3003,
+      "node_id": "IC_kwDOA3003",
+      "url": "https://github.com/org/repo/pull/42#issuecomment-3003",
+      "reviewer_login": "human-reviewer",
+      "body": "Please add a changelog entry."
+    }
+  ]
+}

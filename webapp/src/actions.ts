@@ -34,6 +34,7 @@ interface AgentStatusChangedAction {
         status: AgentStatus;
         pr_url: string;
         summary: string;
+        target_branch?: string;
         updated_at: number;
     };
 }
@@ -236,6 +237,7 @@ export const websocketAgentStatusChange = (data: AgentStatusChangeEvent): AgentS
         status: data.status,
         pr_url: data.pr_url,
         summary: data.summary,
+        target_branch: data.target_branch,
         updated_at: parseTimestamp(data.updated_at),
     },
 });
@@ -247,6 +249,7 @@ export const websocketAgentCreated = (data: AgentCreatedEvent): AgentCreatedActi
         status: data.status,
         repository: data.repository,
         branch: data.branch,
+        target_branch: data.target_branch,
         prompt: data.prompt,
         description: data.description || '',
         pr_url: '',

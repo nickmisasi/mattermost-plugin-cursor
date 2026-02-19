@@ -179,6 +179,7 @@ type AgentResponse struct {
 	Status             string `json:"status"`
 	Repository         string `json:"repository"`
 	Branch             string `json:"branch"`
+	TargetBranch       string `json:"target_branch,omitempty"`
 	Prompt             string `json:"prompt"`
 	Description        string `json:"description"`
 	PrURL              string `json:"pr_url"`
@@ -237,22 +238,23 @@ func (p *Plugin) handleGetAgents(w http.ResponseWriter, r *http.Request) {
 		}
 
 		agentResp := AgentResponse{
-			ID:          a.CursorAgentID,
-			Status:      a.Status,
-			Repository:  a.Repository,
-			Branch:      a.Branch,
-			PrURL:       a.PrURL,
-			CursorURL:   fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
-			ChannelID:   a.ChannelID,
-			PostID:      a.PostID,
-			RootPostID:  a.PostID,
-			Prompt:      a.Prompt,
-			Description: a.Description,
-			Model:       a.Model,
-			Summary:     a.Summary,
-			CreatedAt:   a.CreatedAt,
-			UpdatedAt:   a.UpdatedAt,
-			Archived:    a.Archived,
+			ID:           a.CursorAgentID,
+			Status:       a.Status,
+			Repository:   a.Repository,
+			Branch:       a.Branch,
+			TargetBranch: a.TargetBranch,
+			PrURL:        a.PrURL,
+			CursorURL:    fmt.Sprintf("https://cursor.com/agents/%s", a.CursorAgentID),
+			ChannelID:    a.ChannelID,
+			PostID:       a.PostID,
+			RootPostID:   a.PostID,
+			Prompt:       a.Prompt,
+			Description:  a.Description,
+			Model:        a.Model,
+			Summary:      a.Summary,
+			CreatedAt:    a.CreatedAt,
+			UpdatedAt:    a.UpdatedAt,
+			Archived:     a.Archived,
 		}
 
 		// Look up workflow association for HITL-aware agents.
@@ -304,6 +306,9 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 				if remoteAgent.Target.PrURL != "" {
 					record.PrURL = remoteAgent.Target.PrURL
 				}
+				if remoteAgent.Target.BranchName != "" {
+					record.TargetBranch = remoteAgent.Target.BranchName
+				}
 				if remoteAgent.Summary != "" {
 					record.Summary = remoteAgent.Summary
 				}
@@ -345,22 +350,23 @@ func (p *Plugin) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := AgentResponse{
-		ID:          record.CursorAgentID,
-		Status:      record.Status,
-		Repository:  record.Repository,
-		Branch:      record.Branch,
-		PrURL:       record.PrURL,
-		CursorURL:   fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
-		ChannelID:   record.ChannelID,
-		PostID:      record.PostID,
-		RootPostID:  record.PostID,
-		Prompt:      record.Prompt,
-		Description: record.Description,
-		Model:       record.Model,
-		Summary:     record.Summary,
-		CreatedAt:   record.CreatedAt,
-		UpdatedAt:   record.UpdatedAt,
-		Archived:    record.Archived,
+		ID:           record.CursorAgentID,
+		Status:       record.Status,
+		Repository:   record.Repository,
+		Branch:       record.Branch,
+		TargetBranch: record.TargetBranch,
+		PrURL:        record.PrURL,
+		CursorURL:    fmt.Sprintf("https://cursor.com/agents/%s", record.CursorAgentID),
+		ChannelID:    record.ChannelID,
+		PostID:       record.PostID,
+		RootPostID:   record.PostID,
+		Prompt:       record.Prompt,
+		Description:  record.Description,
+		Model:        record.Model,
+		Summary:      record.Summary,
+		CreatedAt:    record.CreatedAt,
+		UpdatedAt:    record.UpdatedAt,
+		Archived:     record.Archived,
 	}
 
 	// Look up workflow association.

@@ -8,14 +8,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/google/go-github/v68/github"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mattermost/mattermost-plugin-cursor/server/cursor"
 	"github.com/mattermost/mattermost-plugin-cursor/server/store/kvstore"
 )
 
@@ -432,6 +435,7 @@ func TestWebhook_PROpened_StartsReviewLoop(t *testing.T) {
 
 	p.configuration.EnableAIReviewLoop = true
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+	p.configuration.MaxReviewIterations = 5
 
 	// Set up a mock GitHub client so the review loop condition passes.
 	mockGH := &mockGitHubClient{}
@@ -1233,11 +1237,15 @@ func TestWebhook_HumanReviewApproval(t *testing.T) {
 	}))
 }
 
-func TestWebhook_HumanReview_NotApproved_NoTransition(t *testing.T) {
+func TestWebhook_HumanReview_Commented_TriggersCursorFixing(t *testing.T) {
 	p, store := setupWebhookTestPlugin(t)
 	api := p.API.(*mockPluginAPI)
+	mockGH := &mockGitHubClient{}
+	cursorMock := p.cursorClient.(*mockCursorClient)
+	p.githubClient = mockGH
 
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+	p.configuration.MaxReviewIterations = 5
 
 	// Active review loop in human_review phase.
 	loop := &kvstore.ReviewLoop{
@@ -1245,12 +1253,59 @@ func TestWebhook_HumanReview_NotApproved_NoTransition(t *testing.T) {
 		AgentRecordID: "agent-1",
 		Phase:         kvstore.ReviewPhaseHumanReview,
 		Iteration:     2,
+		Owner:         "org",
+		Repo:          "repo",
+		PRNumber:      42,
 		RootPostID:    "root-1",
 		ChannelID:     "ch-1",
 		UserID:        "user-1",
 		PRURL:         "https://github.com/org/repo/pull/42",
 	}
 	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	// Human feedback collection used by direct follow-up dispatch.
+	mockGH.On("ListReviewComments", mock.Anything, "org", "repo", 42).Return([]*github.PullRequestComment{
+		{
+			User: &github.User{Login: github.Ptr("humandev")},
+			Path: github.Ptr("server/api.go"),
+			Line: github.Ptr(18),
+			Body: github.Ptr("Please add a nil guard."),
+		},
+	}, nil)
+	mockGH.On("ListReviews", mock.Anything, "org", "repo", 42).Return([]*github.PullRequestReview{
+		{
+			User: &github.User{Login: github.Ptr("humandev")},
+			Body: github.Ptr("Add tests for the nil path."),
+		},
+	}, nil)
+	mockGH.On("ListIssueComments", mock.Anything, "org", "repo", 42).Return([]*github.IssueComment{}, nil)
+	cursorMock.On("AddFollowup", mock.Anything, "agent-1", mock.MatchedBy(func(req cursor.FollowupRequest) bool {
+		return strings.Contains(req.Prompt.Text, "nil guard") &&
+			strings.Contains(req.Prompt.Text, "do not create a new pull request")
+	})).Return(&cursor.FollowupResponse{ID: "agent-1"}, nil)
+
+	// Review loop transitions to cursor_fixing.
+	store.On("SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseCursorFixing &&
+			l.Iteration == 3 &&
+			l.LastFeedbackDispatchAt > 0 &&
+			l.LastFeedbackDispatchSHA == "human-sha-1" &&
+			len(l.History) > 0 &&
+			strings.Contains(l.History[len(l.History)-1].Detail, "Human feedback iteration 3") &&
+			strings.Contains(l.History[len(l.History)-1].Detail, "direct follow-up dispatched") &&
+			strings.Contains(l.History[len(l.History)-1].Detail, "1 new, 0 repeated, 0 dismissed") &&
+			l.LastFeedbackDigest != ""
+	})).Return(nil)
+
+	// Inline status update invoked by handleHumanReviewFeedback.
+	store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		BotReplyPostID: "reply-1",
+		ChannelID:      "ch-1",
+	}, nil).Maybe()
+	api.On("GetPost", "reply-1").Return(&model.Post{Id: "reply-1", ChannelId: "ch-1"}, nil).Maybe()
+	api.On("UpdatePost", mock.Anything).Return(&model.Post{}, nil).Maybe()
+	api.On("PublishWebSocketEvent", "review_loop_changed", mock.Anything, mock.Anything).Return().Maybe()
 
 	// Agent lookup for normal review notification.
 	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.AgentRecord{
@@ -1277,6 +1332,8 @@ func TestWebhook_HumanReview_NotApproved_NoTransition(t *testing.T) {
 			HTMLURL: "https://github.com/org/repo/pull/42",
 		},
 	}
+	event.PullRequest.Head.Ref = "cursor/fix-review-loop"
+	event.PullRequest.Head.SHA = "human-sha-1"
 	event.Review.User.Login = "humandev"
 	body, _ := json.Marshal(event)
 	sig := signPayload(testWebhookSecret, body)
@@ -1290,27 +1347,184 @@ func TestWebhook_HumanReview_NotApproved_NoTransition(t *testing.T) {
 	p.handleGitHubWebhook(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
-	// Should NOT have saved the review loop -- only approved triggers transition.
-	store.AssertNotCalled(t, "SaveReviewLoop")
+	store.AssertCalled(t, "SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseCursorFixing
+	}))
+	cursorMock.AssertExpectations(t)
 }
 
-func TestWebhook_HumanReview_NotIntercepted(t *testing.T) {
+func TestWebhook_HumanReview_ChangesRequested_TriggersCursorFixing(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+	mockGH := &mockGitHubClient{}
+	cursorMock := p.cursorClient.(*mockCursorClient)
+	p.githubClient = mockGH
+
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+	p.configuration.MaxReviewIterations = 5
+
+	loop := &kvstore.ReviewLoop{
+		ID:            "loop-1",
+		AgentRecordID: "agent-1",
+		Phase:         kvstore.ReviewPhaseHumanReview,
+		Iteration:     1,
+		Owner:         "org",
+		Repo:          "repo",
+		PRNumber:      42,
+		RootPostID:    "root-1",
+		ChannelID:     "ch-1",
+		UserID:        "user-1",
+		PRURL:         "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	mockGH.On("ListReviewComments", mock.Anything, "org", "repo", 42).Return([]*github.PullRequestComment{
+		{
+			User: &github.User{Login: github.Ptr("humandev")},
+			Path: github.Ptr("server/reviewloop.go"),
+			Line: github.Ptr(88),
+			Body: github.Ptr("Please move this to a helper and cover with tests."),
+		},
+	}, nil)
+	mockGH.On("ListReviews", mock.Anything, "org", "repo", 42).Return([]*github.PullRequestReview{
+		{
+			User: &github.User{Login: github.Ptr("humandev")},
+			Body: github.Ptr("Please move this to a helper and cover with tests."),
+		},
+	}, nil)
+	mockGH.On("ListIssueComments", mock.Anything, "org", "repo", 42).Return([]*github.IssueComment{}, nil)
+	cursorMock.On("AddFollowup", mock.Anything, "agent-1", mock.MatchedBy(func(req cursor.FollowupRequest) bool {
+		return strings.Contains(req.Prompt.Text, "Please move this to a helper")
+	})).Return(&cursor.FollowupResponse{ID: "agent-1"}, nil)
+
+	store.On("SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseCursorFixing &&
+			l.Iteration == 2 &&
+			l.LastFeedbackDispatchSHA == "human-sha-2" &&
+			len(l.History) > 0 &&
+			strings.Contains(l.History[len(l.History)-1].Detail, "Human feedback iteration 2") &&
+			strings.Contains(l.History[len(l.History)-1].Detail, "direct follow-up dispatched") &&
+			strings.Contains(l.History[len(l.History)-1].Detail, "1 new, 0 repeated, 0 dismissed") &&
+			l.LastFeedbackDigest != ""
+	})).Return(nil)
+
+	store.On("GetAgent", "agent-1").Return(&kvstore.AgentRecord{
+		CursorAgentID:  "agent-1",
+		BotReplyPostID: "reply-1",
+		ChannelID:      "ch-1",
+	}, nil).Maybe()
+	api.On("GetPost", "reply-1").Return(&model.Post{Id: "reply-1", ChannelId: "ch-1"}, nil).Maybe()
+	api.On("UpdatePost", mock.Anything).Return(&model.Post{}, nil).Maybe()
+	api.On("PublishWebSocketEvent", "review_loop_changed", mock.Anything, mock.Anything).Return().Maybe()
+
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+		PrURL:         "https://github.com/org/repo/pull/42",
+	}, nil)
+	api.On("CreatePost", mock.MatchedBy(func(post *model.Post) bool {
+		return post.RootId == "root-1" && hasAttachmentWithColor(post, "#D24B4E")
+	})).Return(&model.Post{Id: "rv-1"}, nil)
+
+	event := PullRequestReviewEvent{
+		Action: "submitted",
+		Review: ghReview{
+			State:   "changes_requested",
+			Body:    "Need one more refactor pass.",
+			HTMLURL: "https://github.com/org/repo/pull/42#pullrequestreview-3",
+		},
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.PullRequest.Head.Ref = "cursor/fix-review-loop"
+	event.PullRequest.Head.SHA = "human-sha-2"
+	event.Review.User.Login = "humandev"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-human-changes").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-human-changes").Return(nil)
+
+	req := makeWebhookRequest(t, "pull_request_review", "delivery-human-changes", body, sig)
+	rr := httptest.NewRecorder()
+
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	store.AssertCalled(t, "SaveReviewLoop", mock.MatchedBy(func(l *kvstore.ReviewLoop) bool {
+		return l.Phase == kvstore.ReviewPhaseCursorFixing
+	}))
+	cursorMock.AssertExpectations(t)
+}
+
+func TestWebhook_HumanReview_AIBotReview_IsInformationalOnly(t *testing.T) {
 	p, store := setupWebhookTestPlugin(t)
 	api := p.API.(*mockPluginAPI)
 
 	p.configuration.AIReviewerBots = "coderabbitai[bot]"
 
-	agent := &kvstore.AgentRecord{
+	loop := &kvstore.ReviewLoop{
+		ID:    "loop-1",
+		Phase: kvstore.ReviewPhaseHumanReview,
+		PRURL: "https://github.com/org/repo/pull/42",
+	}
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.AgentRecord{
 		CursorAgentID: "agent-1",
 		PostID:        "root-1",
 		ChannelID:     "ch-1",
 		PrURL:         "https://github.com/org/repo/pull/42",
+	}, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{Id: "rv-1"}, nil)
+
+	event := PullRequestReviewEvent{
+		Action: "submitted",
+		Review: ghReview{
+			State:   "commented",
+			Body:    "AI note in human phase",
+			HTMLURL: "https://github.com/org/repo/pull/42#pullrequestreview-4",
+		},
+		PullRequest: ghPullRequest{
+			Number:  42,
+			HTMLURL: "https://github.com/org/repo/pull/42",
+		},
+	}
+	event.Review.User.Login = "coderabbitai[bot]"
+	body, _ := json.Marshal(event)
+	sig := signPayload(testWebhookSecret, body)
+
+	store.On("HasDeliveryBeenProcessed", "delivery-human-ai-info").Return(false, nil)
+	store.On("MarkDeliveryProcessed", "delivery-human-ai-info").Return(nil)
+
+	req := makeWebhookRequest(t, "pull_request_review", "delivery-human-ai-info", body, sig)
+	rr := httptest.NewRecorder()
+	p.handleGitHubWebhook(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	store.AssertNotCalled(t, "SaveReviewLoop")
+}
+
+func TestWebhook_AwaitingReview_HumanReview_IsInformationalOnly(t *testing.T) {
+	p, store := setupWebhookTestPlugin(t)
+	api := p.API.(*mockPluginAPI)
+
+	p.configuration.AIReviewerBots = "coderabbitai[bot]"
+
+	loop := &kvstore.ReviewLoop{
+		ID:    "loop-1",
+		Phase: kvstore.ReviewPhaseAwaitingReview,
+		PRURL: "https://github.com/org/repo/pull/42",
 	}
 
 	event := PullRequestReviewEvent{
 		Action: "submitted",
 		Review: ghReview{
-			State:   "approved",
+			State:   "commented",
+			Body:    "Human comment should be informational while awaiting AI gate.",
 			HTMLURL: "https://github.com/org/repo/pull/42#pullrequestreview-1",
 		},
 		PullRequest: ghPullRequest{
@@ -1325,13 +1539,17 @@ func TestWebhook_HumanReview_NotIntercepted(t *testing.T) {
 
 	store.On("HasDeliveryBeenProcessed", "delivery-human-rv").Return(false, nil)
 	store.On("MarkDeliveryProcessed", "delivery-human-rv").Return(nil)
-	// Human reviewers now check for active review loops, but none found here.
-	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(nil, nil)
-	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(agent, nil)
+	store.On("GetReviewLoopByPRURL", "https://github.com/org/repo/pull/42").Return(loop, nil)
+	store.On("GetAgentByPRURL", "https://github.com/org/repo/pull/42").Return(&kvstore.AgentRecord{
+		CursorAgentID: "agent-1",
+		PostID:        "root-1",
+		ChannelID:     "ch-1",
+		PrURL:         "https://github.com/org/repo/pull/42",
+	}, nil)
 
-	// Normal review notification (green for approved).
+	// Normal review notification still posts.
 	api.On("CreatePost", mock.MatchedBy(func(p *model.Post) bool {
-		return p.RootId == "root-1" && hasAttachmentWithColor(p, "#3DB887")
+		return p.RootId == "root-1" && hasAttachmentWithColor(p, "#2389D7")
 	})).Return(&model.Post{Id: "rv-1"}, nil)
 
 	req := makeWebhookRequest(t, "pull_request_review", "delivery-human-rv", body, sig)
@@ -1340,6 +1558,6 @@ func TestWebhook_HumanReview_NotIntercepted(t *testing.T) {
 	p.handleGitHubWebhook(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
-	// No review loop found, so it falls through to normal notification.
+	// Human reviews do not drive awaiting_review transitions.
 	store.AssertNotCalled(t, "SaveReviewLoop")
 }

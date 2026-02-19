@@ -165,11 +165,41 @@ func (p *Plugin) startReviewLoop(record *kvstore.AgentRecord) error {
 	return nil
 }
 
+const (
+	reviewDispatchModeDirect            = "direct"
+	reviewDispatchModeSkippedIdempotent = "skipped_idempotent"
+	reviewDispatchModeFailed            = "failed"
+
+	reviewDispatchReasonDirectSuccess       = "direct_success"
+	reviewDispatchReasonIdempotentSameState = "idempotent_same_sha_digest"
+	reviewDispatchReasonDirectFailed        = "direct_failed"
+	reviewDispatchReasonCursorClientNil     = "cursor_client_nil"
+	reviewDispatchReasonAddFollowupError    = "add_followup_error"
+
+	reviewFeedbackDropReasonUnknown = "unknown_drop_reason"
+)
+
+type reviewDispatchOutcome struct {
+	Dispatched bool
+	Skipped    bool
+	Failed     bool
+	Mode       string
+	Counts     reviewFeedbackClassificationSummary
+}
+
+func formatReviewDispatchHistoryDetail(baseDetail, modeLabel string, counts reviewFeedbackClassificationSummary) string {
+	countSummary := formatReviewFeedbackCountSummary(counts.New, counts.Repeated, counts.Dismissed)
+	if modeLabel == "" {
+		return fmt.Sprintf("%s (%s)", baseDetail, countSummary)
+	}
+	return fmt.Sprintf("%s (%s; %s)", baseDetail, modeLabel, countSummary)
+}
+
 // handleAIReview processes a submitted review from a known AI reviewer bot.
 // It checks whether CodeRabbit is satisfied and either transitions to approved
-// or posts a @cursor fix comment.
+// or dispatches follow-up feedback.
 func (p *Plugin) handleAIReview(loop *kvstore.ReviewLoop, review ghReview, pr ghPullRequest) error {
-	isCodeRabbit := strings.EqualFold(review.User.Login, "coderabbitai[bot]")
+	isCodeRabbit := strings.EqualFold(review.User.Login, codeRabbitReviewerLogin)
 	codeRabbitSatisfied := false
 
 	if isCodeRabbit {
@@ -231,10 +261,41 @@ func (p *Plugin) handleAIReview(loop *kvstore.ReviewLoop, review ghReview, pr gh
 			return nil
 		}
 
-		// Post @cursor fix comment and transition to cursor_fixing.
-		if err := p.postCursorFixComment(loop); err != nil {
-			p.API.LogError("Failed to post @cursor fix comment", "error", err.Error(), "review_loop_id", loop.ID)
+		if pr.Head.SHA != "" {
+			loop.LastCommitSHA = pr.Head.SHA
+		}
+
+		outcome, err := p.dispatchReviewFeedback(loop, pr)
+		if err != nil {
+			p.API.LogError("Failed to dispatch AI review feedback",
+				"error", err.Error(),
+				"review_loop_id", loop.ID,
+			)
 			return err
+		}
+
+		if outcome.Skipped || outcome.Failed {
+			if err := p.kvstore.SaveReviewLoop(loop); err != nil {
+				return fmt.Errorf("failed to save review loop after dispatch outcome: %w", err)
+			}
+			p.publishReviewLoopChange(loop)
+			return nil
+		}
+		if !outcome.Dispatched {
+			return nil
+		}
+
+		detail := formatReviewDispatchHistoryDetail(
+			fmt.Sprintf("Iteration %d", loop.Iteration+1),
+			"",
+			outcome.Counts,
+		)
+		if outcome.Mode == reviewDispatchModeDirect {
+			detail = formatReviewDispatchHistoryDetail(
+				fmt.Sprintf("Iteration %d", loop.Iteration+1),
+				"direct follow-up dispatched",
+				outcome.Counts,
+			)
 		}
 
 		loop.Phase = kvstore.ReviewPhaseCursorFixing
@@ -242,7 +303,7 @@ func (p *Plugin) handleAIReview(loop *kvstore.ReviewLoop, review ghReview, pr gh
 		loop.History = append(loop.History, kvstore.ReviewLoopEvent{
 			Phase:     kvstore.ReviewPhaseCursorFixing,
 			Timestamp: time.Now().UnixMilli(),
-			Detail:    fmt.Sprintf("Iteration %d", loop.Iteration),
+			Detail:    detail,
 		})
 		loop.UpdatedAt = time.Now().UnixMilli()
 		if err := p.kvstore.SaveReviewLoop(loop); err != nil {
@@ -286,114 +347,276 @@ func (p *Plugin) handlePRSynchronize(loop *kvstore.ReviewLoop, pr ghPullRequest)
 	return nil
 }
 
-// postCursorFixComment aggregates review feedback from AI bots and posts a
-// @cursor fix comment on the PR via the GitHub API.
-func (p *Plugin) postCursorFixComment(loop *kvstore.ReviewLoop) error {
-	feedback, err := p.collectReviewFeedback(loop)
+func (p *Plugin) dispatchReviewFeedback(loop *kvstore.ReviewLoop, pr ghPullRequest) (reviewDispatchOutcome, error) {
+	classification, telemetry, _, err := p.collectReviewFeedbackBundle(loop)
 	if err != nil {
-		return fmt.Errorf("failed to collect review feedback: %w", err)
-	}
-	if feedback == "" {
-		feedback = "Please review and fix any outstanding issues flagged by the AI reviewers."
+		return reviewDispatchOutcome{}, fmt.Errorf("failed to collect review feedback: %w", err)
 	}
 
-	commentBody := fmt.Sprintf("@cursor Please address the following review feedback:\n\n%s", feedback)
+	counts := telemetry.Counts
+	dispatchSHA := strings.TrimSpace(pr.Head.SHA)
+	if dispatchSHA == "" {
+		dispatchSHA = strings.TrimSpace(loop.LastCommitSHA)
+	}
+	dispatchDigest := reviewFeedbackDigest(classification.Dispatchable)
+	lastDispatchSHA := loop.LastFeedbackDispatchSHA
+	lastDispatchDigest := loop.LastFeedbackDigest
 
-	ghClient := p.getGitHubClient()
-	if ghClient == nil {
-		return fmt.Errorf("GitHub client is not configured")
+	p.logReviewFeedbackCollectionSummary(loop, dispatchSHA, telemetry)
+
+	if loop.LastFeedbackDispatchAt > 0 &&
+		dispatchSHA == loop.LastFeedbackDispatchSHA &&
+		dispatchDigest == loop.LastFeedbackDigest {
+		loop.History = append(loop.History, kvstore.ReviewLoopEvent{
+			Phase:     loop.Phase,
+			Timestamp: time.Now().UnixMilli(),
+			Detail: fmt.Sprintf(
+				"Skipped duplicate review feedback dispatch (same SHA and digest; %s)",
+				formatReviewFeedbackCountSummary(counts.New, counts.Repeated, counts.Dismissed),
+			),
+		})
+		loop.UpdatedAt = time.Now().UnixMilli()
+
+		p.logReviewFeedbackDispatchDecision(
+			loop,
+			reviewDispatchModeSkippedIdempotent,
+			reviewDispatchReasonIdempotentSameState,
+			dispatchSHA,
+			dispatchDigest,
+			lastDispatchSHA,
+			lastDispatchDigest,
+			counts,
+			"",
+		)
+
+		return reviewDispatchOutcome{
+			Skipped: true,
+			Mode:    reviewDispatchModeSkippedIdempotent,
+			Counts:  counts,
+		}, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	_, err = ghClient.CreateComment(ctx, loop.Owner, loop.Repo, loop.PRNumber, commentBody)
-	if err != nil {
-		return fmt.Errorf("failed to post @cursor comment on PR: %w", err)
+	followupPrompt := formatFindingsForCursorFollowup(loop, pr, classification.Dispatchable)
+	if strings.TrimSpace(followupPrompt) == "" {
+		followupPrompt = defaultReviewLoopFeedbackText()
 	}
 
-	return nil
+	var primaryErr error
+	decisionReason := reviewDispatchReasonDirectFailed
+	cursorClient := p.getCursorClient()
+	if cursorClient == nil {
+		decisionReason = reviewDispatchReasonCursorClientNil
+		primaryErr = fmt.Errorf("cursor client is not configured")
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		_, primaryErr = cursorClient.AddFollowup(ctx, loop.AgentRecordID, cursor.FollowupRequest{
+			Prompt: cursor.Prompt{
+				Text: followupPrompt,
+			},
+		})
+		if primaryErr != nil {
+			decisionReason = reviewDispatchReasonAddFollowupError
+		}
+	}
+
+	if primaryErr == nil {
+		applyReviewFeedbackDispatchTracking(loop, dispatchSHA, dispatchDigest)
+
+		p.logReviewFeedbackDispatchDecision(
+			loop,
+			reviewDispatchModeDirect,
+			reviewDispatchReasonDirectSuccess,
+			dispatchSHA,
+			dispatchDigest,
+			lastDispatchSHA,
+			lastDispatchDigest,
+			counts,
+			"",
+		)
+
+		return reviewDispatchOutcome{
+			Dispatched: true,
+			Mode:       reviewDispatchModeDirect,
+			Counts:     counts,
+		}, nil
+	}
+
+	loop.History = append(loop.History, kvstore.ReviewLoopEvent{
+		Phase:     loop.Phase,
+		Timestamp: time.Now().UnixMilli(),
+		Detail: fmt.Sprintf(
+			"Failed to dispatch review feedback; manual intervention required (%s)",
+			formatReviewFeedbackCountSummary(counts.New, counts.Repeated, counts.Dismissed),
+		),
+	})
+	loop.UpdatedAt = time.Now().UnixMilli()
+
+	errorPrimary := primaryErr.Error()
+	if decisionReason == "" {
+		decisionReason = reviewDispatchReasonDirectFailed
+	}
+
+	p.logReviewFeedbackDispatchDecision(
+		loop,
+		reviewDispatchModeFailed,
+		decisionReason,
+		dispatchSHA,
+		dispatchDigest,
+		lastDispatchSHA,
+		lastDispatchDigest,
+		counts,
+		errorPrimary,
+	)
+
+	return reviewDispatchOutcome{
+		Failed: true,
+		Mode:   reviewDispatchModeFailed,
+		Counts: counts,
+	}, nil
 }
 
-// collectReviewFeedback fetches all review comments from AI bots on the PR
-// and formats them into a consolidated feedback string for the @cursor fix comment.
+func applyReviewFeedbackDispatchTracking(loop *kvstore.ReviewLoop, dispatchSHA, dispatchDigest string) {
+	now := time.Now().UnixMilli()
+	loop.LastFeedbackDispatchAt = now
+	loop.LastFeedbackDispatchSHA = dispatchSHA
+	loop.LastFeedbackDigest = dispatchDigest
+	loop.FeedbackCursor = fmt.Sprintf("%d", now)
+}
+
+func (p *Plugin) logReviewFeedbackCollectionSummary(loop *kvstore.ReviewLoop, dispatchSHA string, telemetry reviewFeedbackTelemetry) {
+	p.logDebug("Review feedback collection summary",
+		"review_loop_id", loop.ID,
+		"agent_record_id", loop.AgentRecordID,
+		"phase", loop.Phase,
+		"iteration", loop.Iteration,
+		"pr_url", loop.PRURL,
+		"dispatch_sha", dispatchSHA,
+		"candidate_total", telemetry.Source.Total,
+		"candidate_review_comment", telemetry.Source.ReviewComment,
+		"candidate_review_body", telemetry.Source.ReviewBody,
+		"candidate_issue_comment", telemetry.Source.IssueComment,
+		"candidate_ai_bot", telemetry.Source.AIBot,
+		"candidate_human", telemetry.Source.Human,
+		"new_count", telemetry.Counts.New,
+		"repeated_count", telemetry.Counts.Repeated,
+		"resolved_count", telemetry.Counts.Resolved,
+		"superseded_count", telemetry.Counts.Superseded,
+		"dismissed_count", telemetry.Counts.Dismissed,
+		"dispatchable_count", telemetry.Counts.Dispatchable,
+	)
+}
+
+func (p *Plugin) logReviewFeedbackCandidateDropped(
+	loop *kvstore.ReviewLoop,
+	candidate reviewFeedbackCandidate,
+	route reviewerExtractionRoute,
+	dropReason string,
+) {
+	if strings.TrimSpace(dropReason) == "" {
+		dropReason = reviewFeedbackDropReasonUnknown
+	}
+
+	p.logDebug("Review feedback candidate dropped",
+		"review_loop_id", loop.ID,
+		"agent_record_id", loop.AgentRecordID,
+		"phase", loop.Phase,
+		"iteration", loop.Iteration,
+		"pr_url", loop.PRURL,
+		"extraction_route", string(route),
+		"drop_reason", dropReason,
+		"candidate_source_type", candidate.SourceType,
+		"candidate_source_id", candidate.SourceID,
+		"candidate_reviewer_login", candidate.ReviewerLogin,
+		"candidate_reviewer_type", candidate.ReviewerType,
+		"candidate_path", candidate.Path,
+		"candidate_line", candidate.Line,
+		"candidate_commit_sha", candidate.CommitSHA,
+		"candidate_raw_text_len", len(candidate.RawText),
+		"candidate_normalized_text_len", len(candidate.NormalizedText),
+	)
+}
+
+func (p *Plugin) logReviewFeedbackDispatchDecision(
+	loop *kvstore.ReviewLoop,
+	dispatchMode string,
+	decisionReason string,
+	dispatchSHA string,
+	dispatchDigest string,
+	lastDispatchSHA string,
+	lastDispatchDigest string,
+	counts reviewFeedbackClassificationSummary,
+	errorPrimary string,
+) {
+	debugFields := []any{
+		"review_loop_id", loop.ID,
+		"agent_record_id", loop.AgentRecordID,
+		"phase", loop.Phase,
+		"iteration", loop.Iteration,
+		"dispatch_mode", dispatchMode,
+		"decision_reason", decisionReason,
+		"dispatch_sha", dispatchSHA,
+		"dispatch_digest", dispatchDigest,
+		"last_dispatch_sha", lastDispatchSHA,
+		"last_dispatch_digest", lastDispatchDigest,
+		"new_count", counts.New,
+		"repeated_count", counts.Repeated,
+		"dismissed_count", counts.Dismissed,
+		"dispatchable_count", counts.Dispatchable,
+	}
+	if errorPrimary != "" {
+		debugFields = append(debugFields, "error_primary", errorPrimary)
+	}
+	p.logDebug("Review feedback dispatch decision", debugFields...)
+
+	switch dispatchMode {
+	case reviewDispatchModeFailed:
+		p.API.LogError("Review feedback dispatch decision",
+			"review_loop_id", loop.ID,
+			"dispatch_mode", dispatchMode,
+			"decision_reason", decisionReason,
+			"iteration", loop.Iteration,
+			"dispatch_sha", dispatchSHA,
+			"dispatch_digest", dispatchDigest,
+			"new_count", counts.New,
+			"repeated_count", counts.Repeated,
+			"dismissed_count", counts.Dismissed,
+			"dispatchable_count", counts.Dispatchable,
+			"error_primary", errorPrimary,
+		)
+	}
+}
+
+// collectReviewFeedback keeps the existing method shape for tests/callers while
+// delegating to the staged feedback pipeline.
 func (p *Plugin) collectReviewFeedback(loop *kvstore.ReviewLoop) (string, error) {
-	ghClient := p.getGitHubClient()
-	if ghClient == nil {
-		return "", fmt.Errorf("GitHub client is not configured")
-	}
-	config := p.getConfiguration()
-	botUsernames := config.ParseAIReviewerBots()
-	botSet := make(map[string]bool, len(botUsernames))
-	for _, bot := range botUsernames {
-		botSet[strings.ToLower(bot)] = true
-	}
+	_, _, feedback, err := p.collectReviewFeedbackBundle(loop)
+	return feedback, err
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	comments, err := ghClient.ListReviewComments(ctx, loop.Owner, loop.Repo, loop.PRNumber)
+func (p *Plugin) collectReviewFeedbackBundle(loop *kvstore.ReviewLoop) (reviewFeedbackClassification, reviewFeedbackTelemetry, string, error) {
+	candidates, err := p.collectFeedbackCandidates(loop)
 	if err != nil {
-		return "", fmt.Errorf("failed to list review comments: %w", err)
+		return reviewFeedbackClassification{}, reviewFeedbackTelemetry{}, "", err
 	}
 
-	var sb strings.Builder
-	commentNum := 0
-
-	for _, c := range comments {
-		// Skip non-bot comments.
-		if c.User == nil || !botSet[strings.ToLower(c.User.GetLogin())] {
+	normalized := make([]reviewFeedbackCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = normalizeFeedbackCandidate(candidate)
+		actionableText, route, dropReason := extractCandidateActionableText(candidate)
+		candidate.ActionableText = actionableText
+		if candidate.ActionableText == "" {
+			p.logReviewFeedbackCandidateDropped(loop, candidate, route, dropReason)
 			continue
 		}
 
-		// Filter by commit SHA if we have one -- only include comments on the latest commit.
-		if loop.LastCommitSHA != "" && c.CommitID != nil && *c.CommitID != loop.LastCommitSHA {
-			continue
-		}
-
-		commentNum++
-		file := c.GetPath()
-		line := c.GetLine()
-		body := sanitizeReviewBodyForMattermost(c.GetBody())
-
-		switch {
-		case file != "" && line > 0:
-			sb.WriteString(fmt.Sprintf("%d. **%s:%d** - %s\n", commentNum, file, line, body))
-		case file != "":
-			sb.WriteString(fmt.Sprintf("%d. **%s** - %s\n", commentNum, file, body))
-		default:
-			sb.WriteString(fmt.Sprintf("%d. %s\n", commentNum, body))
-		}
+		normalized = append(normalized, candidate)
 	}
 
-	// Also fetch top-level review body text.
-	reviews, err := ghClient.ListReviews(ctx, loop.Owner, loop.Repo, loop.PRNumber)
-	if err != nil {
-		p.API.LogWarn("Failed to list reviews for feedback collection", "error", err.Error())
-		// Non-fatal: we still have inline comments.
-	} else {
-		for _, r := range reviews {
-			if r.User == nil || !botSet[strings.ToLower(r.User.GetLogin())] {
-				continue
-			}
-			body := r.GetBody()
-			if body == "" {
-				continue
-			}
-			// Skip the "satisfied" review body.
-			if strings.Contains(body, "Actionable comments posted: 0") {
-				continue
-			}
-			body = sanitizeReviewBodyForMattermost(body)
-			if commentNum == 0 {
-				sb.WriteString("**Review summary:**\n")
-			}
-			commentNum++
-			sb.WriteString(fmt.Sprintf("%d. %s\n", commentNum, truncateText(body, 500)))
-		}
-	}
-
-	return sb.String(), nil
+	classification := classifyFeedback(loop, normalized, time.Now().UnixMilli())
+	telemetry := summarizeReviewFeedbackTelemetry(candidates, classification)
+	return classification, telemetry, formatFindingsForCursorComment(classification.Dispatchable), nil
 }
 
 // transitionToHumanReview assigns human reviewers and transitions the loop to human_review.
@@ -499,6 +722,88 @@ func (p *Plugin) publishReviewLoopChange(loop *kvstore.ReviewLoop) {
 		},
 		&model.WebsocketBroadcast{UserId: loop.UserID},
 	)
+}
+
+// handleHumanReviewFeedback processes human review submissions in human_review
+// phase and triggers a cursor_fixing iteration for commented/changes_requested.
+func (p *Plugin) handleHumanReviewFeedback(loop *kvstore.ReviewLoop, review ghReview, pr ghPullRequest) error {
+	state := strings.ToLower(strings.TrimSpace(review.State))
+	if state != reviewStateCommented && state != reviewStateChangesRequested {
+		return nil
+	}
+
+	config := p.getConfiguration()
+	if loop.Iteration >= config.MaxReviewIterations {
+		loop.Phase = kvstore.ReviewPhaseMaxIterations
+		loop.History = append(loop.History, kvstore.ReviewLoopEvent{
+			Phase:     kvstore.ReviewPhaseMaxIterations,
+			Timestamp: time.Now().UnixMilli(),
+			Detail:    fmt.Sprintf("Reached max iterations (%d)", config.MaxReviewIterations),
+		})
+		loop.UpdatedAt = time.Now().UnixMilli()
+		_ = p.kvstore.SaveReviewLoop(loop)
+
+		p.updateReviewLoopInlineStatus(loop)
+		p.publishReviewLoopChange(loop)
+		p.postReviewLoopCompletion(loop, attachments.BuildMaxIterationsAttachment(
+			loop.PRURL,
+			config.MaxReviewIterations,
+		))
+		p.swapReaction(loop.TriggerPostID, "eyes", "warning")
+		return nil
+	}
+
+	if pr.Head.SHA != "" {
+		loop.LastCommitSHA = pr.Head.SHA
+	}
+
+	outcome, err := p.dispatchReviewFeedback(loop, pr)
+	if err != nil {
+		p.API.LogError("Failed to dispatch human review feedback",
+			"error", err.Error(),
+			"review_loop_id", loop.ID,
+		)
+		return err
+	}
+	if outcome.Skipped || outcome.Failed {
+		if err := p.kvstore.SaveReviewLoop(loop); err != nil {
+			return fmt.Errorf("failed to save review loop after dispatch outcome: %w", err)
+		}
+		p.publishReviewLoopChange(loop)
+		return nil
+	}
+	if !outcome.Dispatched {
+		return nil
+	}
+
+	detail := formatReviewDispatchHistoryDetail(
+		fmt.Sprintf("Human feedback iteration %d", loop.Iteration+1),
+		"",
+		outcome.Counts,
+	)
+	if outcome.Mode == reviewDispatchModeDirect {
+		detail = formatReviewDispatchHistoryDetail(
+			fmt.Sprintf("Human feedback iteration %d", loop.Iteration+1),
+			"direct follow-up dispatched",
+			outcome.Counts,
+		)
+	}
+
+	loop.Phase = kvstore.ReviewPhaseCursorFixing
+	loop.Iteration++
+	loop.History = append(loop.History, kvstore.ReviewLoopEvent{
+		Phase:     kvstore.ReviewPhaseCursorFixing,
+		Timestamp: time.Now().UnixMilli(),
+		Detail:    detail,
+	})
+	loop.UpdatedAt = time.Now().UnixMilli()
+	if err := p.kvstore.SaveReviewLoop(loop); err != nil {
+		return fmt.Errorf("failed to save review loop: %w", err)
+	}
+
+	p.updateReviewLoopInlineStatus(loop)
+	p.publishReviewLoopChange(loop)
+	return nil
 }
 
 // handleHumanReviewApproval transitions the review loop to complete when a human

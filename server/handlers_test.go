@@ -293,12 +293,38 @@ func setupTestPlugin(t *testing.T) (*Plugin, *plugintest.API, *mockCursorClient,
 	api := &plugintest.API{}
 	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogDebug",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything,
+	).Maybe()
 	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+	).Maybe()
+	api.On("LogWarn",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+	).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError",
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+		mock.Anything,
+	).Maybe()
 
 	// ShouldProcessMessage calls GetUser to check if the poster is a bot.
 	api.On("GetUser", "user-1").Return(&model.User{

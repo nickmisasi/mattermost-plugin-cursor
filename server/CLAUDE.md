@@ -118,3 +118,4 @@ Routes:
 - **Thread root ID**: When replying in a thread, if the post has a `RootId`, use it. If not, the post's own ID is the root.
 - **Reactions on trigger post**: Reactions go on `record.TriggerPostID` (the user's original @mention), not on the bot's reply post.
 - **WebSocket broadcast scope**: Events are broadcast to `record.UserID` only, not to channels.
+- **AI review-loop dispatch is direct-only**: Review-loop fix iterations must dispatch through `cursorClient.AddFollowup` only. Do not reintroduce `@cursor` PR-comment relay fallback; failures are fail-fast and visible through history/logging.
