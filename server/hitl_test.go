@@ -748,6 +748,27 @@ func TestBuildPlannerPrompt(t *testing.T) {
 		assert.Contains(t, prompt, "fix the login bug")
 	})
 
+	t.Run("adds browser qa guidance for scoped repository", func(t *testing.T) {
+		workflow := &kvstore.HITLWorkflow{
+			Repository:      "https://github.com/mattermost/mattermost",
+			OriginalPrompt:  "fix the login bug",
+			ApprovedContext: "Fix the login bug from System Console",
+		}
+		prompt := p.buildPlannerPrompt(workflow)
+		assert.Contains(t, prompt, ".cursor/skills/browser-qa.md")
+		assert.Contains(t, prompt, "attempt to reproduce the issue before finalizing the plan")
+	})
+
+	t.Run("does not add browser qa guidance for non-scoped repository", func(t *testing.T) {
+		workflow := &kvstore.HITLWorkflow{
+			Repository:      "org/repo",
+			OriginalPrompt:  "fix the login bug",
+			ApprovedContext: "Fix the login bug from System Console",
+		}
+		prompt := p.buildPlannerPrompt(workflow)
+		assert.NotContains(t, prompt, ".cursor/skills/browser-qa.md")
+	})
+
 	t.Run("custom planner system prompt", func(t *testing.T) {
 		p.configuration = &configuration{PlannerSystemPrompt: "Custom planner instructions"}
 		workflow := &kvstore.HITLWorkflow{

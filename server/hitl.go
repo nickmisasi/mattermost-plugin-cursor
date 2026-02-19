@@ -369,6 +369,9 @@ func (p *Plugin) launchPlannerAgent(workflow *kvstore.HITLWorkflow) error {
 // buildPlannerPrompt constructs the prompt for a planner agent.
 func (p *Plugin) buildPlannerPrompt(workflow *kvstore.HITLWorkflow) string {
 	plannerSystemPrompt := p.getPlannerSystemPrompt()
+	if isMattermostMattermostRepository(workflow.Repository) {
+		plannerSystemPrompt = strings.TrimRight(plannerSystemPrompt, "\n") + "\n\n" + mattermostBrowserQAPlannerInstructions
+	}
 
 	var sb strings.Builder
 	sb.WriteString("<system-instructions>\n")
@@ -667,7 +670,7 @@ func (p *Plugin) launchImplementerFromWorkflow(workflow *kvstore.HITLWorkflow) {
 	}
 
 	// Wrap with system instructions.
-	promptText = p.wrapPromptWithSystemInstructions(promptText)
+	promptText = p.wrapPromptWithSystemInstructions(promptText, workflow.Repository)
 
 	// Build launch request.
 	repoURL := workflow.Repository
