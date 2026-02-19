@@ -66,32 +66,30 @@ func (p *Plugin) handleSettingsDialogSubmission(w http.ResponseWriter, r *http.R
 	}
 
 	// Extract HITL toggle fields.
-	userEnableContextReview, _ := request.Submission["user_enable_context_review"].(string)
-	userEnablePlanLoop, _ := request.Submission["user_enable_plan_loop"].(string)
-
 	userSettingsToSave := &kvstore.UserSettings{
 		DefaultRepository: userRepo,
 		DefaultBranch:     userBranch,
 		DefaultModel:      userModel,
 	}
 
-	switch userEnableContextReview {
-	case "true":
-		b := true
-		userSettingsToSave.EnableContextReview = &b
-	case "false":
-		b := false
-		userSettingsToSave.EnableContextReview = &b
+	if raw, ok := request.Submission["user_enable_context_review"]; ok {
+		if value, parsed := parseOptionalDialogBool(raw); parsed {
+			userSettingsToSave.EnableContextReview = value
+		} else {
+			p.API.LogWarn("Ignoring invalid HITL context review toggle value",
+				"value", raw,
+			)
+		}
 	}
-	// default: nil (use global default)
 
-	switch userEnablePlanLoop {
-	case "true":
-		b := true
-		userSettingsToSave.EnablePlanLoop = &b
-	case "false":
-		b := false
-		userSettingsToSave.EnablePlanLoop = &b
+	if raw, ok := request.Submission["user_enable_plan_loop"]; ok {
+		if value, parsed := parseOptionalDialogBool(raw); parsed {
+			userSettingsToSave.EnablePlanLoop = value
+		} else {
+			p.API.LogWarn("Ignoring invalid HITL plan loop toggle value",
+				"value", raw,
+			)
+		}
 	}
 
 	// Save user settings.
@@ -109,4 +107,25 @@ func (p *Plugin) handleSettingsDialogSubmission(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte("{}"))
+}
+
+func parseOptionalDialogBool(raw any) (*bool, bool) {
+	switch value := raw.(type) {
+	case bool:
+		v := value
+		return &v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "":
+			return nil, true
+		case "true", "1", "yes", "on":
+			v := true
+			return &v, true
+		case "false", "0", "no", "off":
+			v := false
+			return &v, true
+		}
+	}
+
+	return nil, false
 }

@@ -725,10 +725,10 @@ func (p *Plugin) publishReviewLoopChange(loop *kvstore.ReviewLoop) {
 }
 
 // handleHumanReviewFeedback processes human review submissions in human_review
-// phase and triggers a cursor_fixing iteration for commented/changes_requested.
+// phase and triggers a cursor_fixing iteration only for changes_requested.
 func (p *Plugin) handleHumanReviewFeedback(loop *kvstore.ReviewLoop, review ghReview, pr ghPullRequest) error {
 	state := strings.ToLower(strings.TrimSpace(review.State))
-	if state != reviewStateCommented && state != reviewStateChangesRequested {
+	if state != reviewStateChangesRequested {
 		return nil
 	}
 
