@@ -228,6 +228,45 @@ func TestSettingsDialog_SavesHITLSettings(t *testing.T) {
 			"user_default_repo":          "org/repo",
 			"user_default_branch":        "main",
 			"user_default_model":         "auto",
+			"user_enable_context_review": true,
+			"user_enable_plan_loop":      false,
+		},
+	}
+
+	store.On("SaveChannelSettings", "ch-1", mock.Anything).Return(nil)
+	store.On("SaveUserSettings", "user-1", mock.MatchedBy(func(s *kvstore.UserSettings) bool {
+		return s.DefaultRepository == "org/repo" &&
+			s.EnableContextReview != nil && *s.EnableContextReview == true &&
+			s.EnablePlanLoop != nil && *s.EnablePlanLoop == false
+	})).Return(nil)
+	api.On("SendEphemeralPost", "user-1", mock.Anything).Return(&model.Post{})
+
+	body, _ := json.Marshal(submission)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/dialog/settings", bytes.NewReader(body))
+	r.Header.Set("Mattermost-User-ID", "user-1")
+
+	p.ServeHTTP(nil, w, r)
+
+	result := w.Result()
+	defer func() { _ = result.Body.Close() }()
+	assert.Equal(t, http.StatusOK, result.StatusCode)
+
+	store.AssertExpectations(t)
+}
+
+func TestSettingsDialog_SavesHITLSettings_StringCoercion(t *testing.T) {
+	p, api, store := setupDialogTestPlugin(t)
+
+	submission := model.SubmitDialogRequest{
+		UserId: "user-1",
+		State:  "ch-1|user-1",
+		Submission: map[string]any{
+			"channel_default_repo":       "",
+			"channel_default_branch":     "",
+			"user_default_repo":          "org/repo",
+			"user_default_branch":        "main",
+			"user_default_model":         "auto",
 			"user_enable_context_review": "true",
 			"user_enable_plan_loop":      "false",
 		},
@@ -289,4 +328,56 @@ func TestSettingsDialog_NilHITLSettings_NoOverride(t *testing.T) {
 	assert.Equal(t, http.StatusOK, result.StatusCode)
 
 	store.AssertExpectations(t)
+}
+
+func TestParseOptionalDialogBool(t *testing.T) {
+	t.Run("bool true", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool(true)
+		assert.True(t, ok)
+		if assert.NotNil(t, value) {
+			assert.True(t, *value)
+		}
+	})
+
+	t.Run("bool false", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool(false)
+		assert.True(t, ok)
+		if assert.NotNil(t, value) {
+			assert.False(t, *value)
+		}
+	})
+
+	t.Run("string true", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool("true")
+		assert.True(t, ok)
+		if assert.NotNil(t, value) {
+			assert.True(t, *value)
+		}
+	})
+
+	t.Run("string false", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool("false")
+		assert.True(t, ok)
+		if assert.NotNil(t, value) {
+			assert.False(t, *value)
+		}
+	})
+
+	t.Run("blank string means nil override", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool("   ")
+		assert.True(t, ok)
+		assert.Nil(t, value)
+	})
+
+	t.Run("invalid type", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool(1)
+		assert.False(t, ok)
+		assert.Nil(t, value)
+	})
+
+	t.Run("invalid string", func(t *testing.T) {
+		value, ok := parseOptionalDialogBool("maybe")
+		assert.False(t, ok)
+		assert.Nil(t, value)
+	})
 }

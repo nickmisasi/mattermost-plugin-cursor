@@ -415,8 +415,9 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 				return
 			}
 		case kvstore.ReviewPhaseHumanReview:
-			// Human approval is terminal; human commented/changes_requested now
-			// trigger another cursor_fixing iteration.
+			// Human approval is terminal; only explicit changes_requested should
+			// trigger another cursor_fixing iteration. Plain commented reviews
+			// remain informational.
 			if reviewerType == reviewerTypeHuman {
 				if strings.EqualFold(event.Review.State, reviewStateApproved) {
 					if err := p.handleHumanReviewApproval(loop, event.Review.User.Login); err != nil {
@@ -425,8 +426,7 @@ func (p *Plugin) handlePullRequestReviewEvent(w http.ResponseWriter, body []byte
 							"review_loop_id", loop.ID,
 						)
 					}
-				} else if strings.EqualFold(event.Review.State, reviewStateCommented) ||
-					strings.EqualFold(event.Review.State, reviewStateChangesRequested) {
+				} else if strings.EqualFold(event.Review.State, reviewStateChangesRequested) {
 					if err := p.handleHumanReviewFeedback(loop, event.Review, event.PullRequest); err != nil {
 						p.API.LogError("Failed to handle human review feedback",
 							"error", err.Error(),
