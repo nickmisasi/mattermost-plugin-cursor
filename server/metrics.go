@@ -66,6 +66,9 @@ func getAPIRequestCountsSnapshot() map[string]int {
 	return snapshot
 }
 
+// apiMetricsMiddleware records every request that reaches the plugin router.
+// Counts include requests later rejected by auth middleware (401/403) and
+// unmatched paths that end as 404 responses.
 func apiMetricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recordAPIRequest(endpointKey(r))
