@@ -83,18 +83,28 @@ Two consequences worth remembering:
 
 - Agent-level `status` is only `ACTIVE`/`ARCHIVED`. Execution status comes from
   the enriched `runStatus` on list items and from the run itself on the detail
-  view -- never from `agent.status`.
+  view -- never from `agent.status`. Being archived is a lifecycle fact and must
+  never be rendered *instead of* the run status: `StatusBadge` shows the run and
+  adds a separate `Archived` chip, so a cancelled run on an archived agent still
+  reads "Cancelled". `statusLabel` describes the run only.
 - Branch, PR URL, `durationMs` and the final `result` live on the **run**. The
   detail view fetches `latestRunId` separately and falls back to it, and
   `utils/conversation.ts` surfaces a terminal run's `result` as the newest
   assistant message when the conversation fetch lags behind.
 
 `includeArchived` defaults to **true** upstream, so `useAgents` always sends it
-explicitly. It sends `true` unconditionally and the archived filter is applied
-while grouping, which keeps the toggle instant and means no request can be left
-in flight for a filter the user has already changed. Every list response is
-epoch-checked so a slow reply can never overwrite fresher state, and paging
-appends by id so duplicates across pages collapse.
+explicitly, matching the state of the archived toggle. The **server is the
+authority** on which agents are archived: list items carry "only the durable
+identity fields", so a list payload need not spell the lifecycle out, and a
+client-side predicate alone would silently stop hiding anything. Grouping still
+applies `agent.archived` on top, so the toggle reacts before the refetch lands
+and anything the server does return archived stays hidden. Every list response
+is epoch-checked so a reply for the previous filter can never overwrite fresher
+state, paging resets when the filter changes, and pages append by id so
+duplicates collapse.
+
+`normalizeAgent` treats an agent as archived when `archived` is `true` or
+`status` is `ARCHIVED`; both shapes appear in Cursor's API surface.
 
 ## Streaming
 

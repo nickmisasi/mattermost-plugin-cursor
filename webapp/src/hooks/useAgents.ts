@@ -26,12 +26,14 @@ function appendUnique(existing: Agent[], incoming: Agent[]): Agent[] {
 /**
  * Loads the user's agents and keeps them fresh while the panel is open.
  *
- * Archived agents are always fetched and filtered during rendering, so the
- * archived toggle is instant and can never leave a request for the previous
- * filter in flight. `includeArchived` is still sent explicitly because
- * upstream defaults it to true.
+ * `includeArchived` is sent on every request because the server is the only
+ * authority on which agents are archived: list items are documented as
+ * carrying "only the durable identity fields", so a payload need not say that
+ * an agent is archived and the client-side predicate in `groupAgentsByRepository`
+ * cannot be the only thing hiding them. Rendering still applies that predicate
+ * so the toggle responds without waiting for the refetch.
  */
-export function useAgents(onNotConfigured: () => void): AgentsState {
+export function useAgents(includeArchived: boolean, onNotConfigured: () => void): AgentsState {
     const [agents, setAgents] = useState<Agent[]>([]);
     const [nextCursor, setNextCursor] = useState('');
     const [loading, setLoading] = useState(true);
@@ -40,11 +42,12 @@ export function useAgents(onNotConfigured: () => void): AgentsState {
     const [error, setError] = useState('');
 
     const mounted = useRef(true);
+    const loadedOnce = useRef(false);
     const inFlight = useRef(false);
 
     // Bumped by every first-page load. A response may only write state if its
-    // epoch is still the newest, so a slow reply can never clobber fresher data
-    // or append a page that belongs to a superseded list.
+    // epoch is still the newest, so a reply for the previous filter can never
+    // clobber fresher data or append a page that belongs to a superseded list.
     const epoch = useRef(0);
 
     // Once the user has paged past the first page, refreshes merge into the
@@ -66,86 +69,92 @@ export function useAgents(onNotConfigured: () => void): AgentsState {
         }
     }, [onNotConfigured]);
 
-    const loadFirstPage = useCallback(async (background: boolean) => {
-        if (inFlight.current) {
-            return;
-        }
-        inFlight.current = true;
+    const loadFirstPage = useCallback(async () => {
         epoch.current += 1;
         const requestEpoch = epoch.current;
+        const current = () => mounted.current && requestEpoch === epoch.current;
+        inFlight.current = true;
 
-        if (background) {
+        if (loadedOnce.current) {
             setRefreshing(true);
         }
 
         try {
-            const payload = await Client.listAgents({limit: PAGE_SIZE, includeArchived: true});
-            if (!mounted.current || requestEpoch !== epoch.current) {
+            const payload = await Client.listAgents({limit: PAGE_SIZE, includeArchived});
+            if (!current()) {
                 return;
             }
             const page = normalizeAgentList(payload);
-            setAgents((current) => (hasPaged.current ? appendUnique(page.agents, current) : page.agents));
+            setAgents((existing) => (hasPaged.current ? appendUnique(page.agents, existing) : page.agents));
             if (!hasPaged.current) {
                 setNextCursor(page.nextCursor);
             }
             setError('');
         } catch (err) {
-            if (mounted.current && requestEpoch === epoch.current) {
+            if (current()) {
                 handleError(err);
             }
         } finally {
+            loadedOnce.current = true;
             inFlight.current = false;
-            if (mounted.current) {
+            if (current()) {
                 setLoading(false);
                 setRefreshing(false);
             }
         }
-    }, [handleError]);
+    }, [handleError, includeArchived]);
+
+    // Polling and focus must never displace a load the user is waiting on; a
+    // filter change or an explicit refresh always goes through.
+    const backgroundRefresh = useCallback(() => {
+        if (!inFlight.current) {
+            loadFirstPage();
+        }
+    }, [loadFirstPage]);
 
     const loadMore = useCallback(async () => {
-        if (!nextCursor || inFlight.current) {
+        if (!nextCursor || loadingMore) {
             return;
         }
-        inFlight.current = true;
         const requestEpoch = epoch.current;
+        const current = () => mounted.current && requestEpoch === epoch.current;
         setLoadingMore(true);
 
         try {
-            const payload = await Client.listAgents({limit: PAGE_SIZE, includeArchived: true, cursor: nextCursor});
-            if (!mounted.current || requestEpoch !== epoch.current) {
+            const payload = await Client.listAgents({limit: PAGE_SIZE, includeArchived, cursor: nextCursor});
+            if (!current()) {
                 return;
             }
             const page = normalizeAgentList(payload);
             hasPaged.current = true;
-            setAgents((current) => appendUnique(current, page.agents));
+            setAgents((existing) => appendUnique(existing, page.agents));
             setNextCursor(page.nextCursor);
             setError('');
         } catch (err) {
-            if (mounted.current && requestEpoch === epoch.current) {
+            if (current()) {
                 handleError(err);
             }
         } finally {
-            inFlight.current = false;
             if (mounted.current) {
                 setLoadingMore(false);
             }
         }
-    }, [handleError, nextCursor]);
+    }, [handleError, includeArchived, loadingMore, nextCursor]);
 
     useEffect(() => {
-        loadFirstPage(false);
+        // Changing the filter asks for a different result set, so the pages
+        // already collected no longer apply.
+        hasPaged.current = false;
+        loadFirstPage();
 
-        const timer = window.setInterval(() => loadFirstPage(true), POLL_INTERVAL_MS);
-        const onFocus = () => loadFirstPage(true);
-        window.addEventListener('focus', onFocus);
+        const timer = window.setInterval(backgroundRefresh, POLL_INTERVAL_MS);
+        window.addEventListener('focus', backgroundRefresh);
 
         return () => {
             window.clearInterval(timer);
-            window.removeEventListener('focus', onFocus);
+            window.removeEventListener('focus', backgroundRefresh);
         };
-    }, [loadFirstPage]);
+    }, [backgroundRefresh, loadFirstPage]);
 
-    const refresh = useCallback(() => loadFirstPage(true), [loadFirstPage]);
-
-    return {agents, loading, refreshing, loadingMore, nextCursor, error, refresh, loadMore};
+    return {agents, loading, refreshing, loadingMore, nextCursor, error, refresh: loadFirstPage, loadMore};
 }

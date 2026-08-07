@@ -1,7 +1,7 @@
 import React from 'react';
 
 import type {RunStatus} from '../types';
-import {statusLabel, statusVariant} from '../utils/status';
+import {ARCHIVED_LABEL, statusLabel, statusVariant} from '../utils/status';
 
 interface Props {
     status?: RunStatus;
@@ -10,7 +10,7 @@ interface Props {
 
 const StatusDot = ({status, archived = false}: Props) => {
     const variant = statusVariant(status, archived);
-    const label = statusLabel(status, archived);
+    const label = archived ? `${statusLabel(status)} · ${ARCHIVED_LABEL}` : statusLabel(status);
 
     return (
         <span

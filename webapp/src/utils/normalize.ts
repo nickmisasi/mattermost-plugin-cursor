@@ -83,6 +83,20 @@ export function normalizeRun(input: unknown): Run | null {
 }
 
 /**
+ * An agent is archived when its lifecycle status says so. The list endpoint
+ * documents its items as carrying "only the durable identity fields", so the
+ * lifecycle is not guaranteed to be spelled out there and the archived filter
+ * cannot rely on this alone — the request also asks the server to exclude
+ * archived agents. See `useAgents`.
+ */
+function isArchived(raw: RawAgent): boolean {
+    if (typeof raw.archived === 'boolean') {
+        return raw.archived;
+    }
+    return asString(raw.status).toUpperCase() === 'ARCHIVED';
+}
+
+/**
  * Flattens an agent payload for rendering. `branch`, `prUrl` and `runStatus`
  * are added by the plugin when it enriches list items; `GET /agents/{id}` has
  * none of them, so the detail view fills those in from the latest run.
@@ -117,7 +131,7 @@ export function normalizeAgent(input: unknown): Agent | null {
         createdAt,
         updatedAt,
         activityAt: Math.max(createdAt, updatedAt),
-        archived: asString(raw.status).toUpperCase() === 'ARCHIVED',
+        archived: isArchived(raw),
         runStatus: asRunStatus(raw.runStatus),
         latestRunId: asString(raw.latestRunId),
     };

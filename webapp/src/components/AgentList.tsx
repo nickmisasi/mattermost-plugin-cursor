@@ -14,6 +14,8 @@ interface Props {
     hasMore: boolean;
     error: string;
     email: string;
+    includeArchived: boolean;
+    onToggleArchived: () => void;
     onRefresh: () => void;
     onLoadMore: () => void;
     onNewAgent: () => void;
@@ -29,6 +31,8 @@ const AgentList = ({
     hasMore,
     error,
     email,
+    includeArchived,
+    onToggleArchived,
     onRefresh,
     onLoadMore,
     onNewAgent,
@@ -37,9 +41,11 @@ const AgentList = ({
 }: Props) => {
     const [searchOpen, setSearchOpen] = useState(false);
     const [query, setQuery] = useState('');
-    const [includeArchived, setIncludeArchived] = useState(false);
     const searchInput = useRef<HTMLInputElement>(null);
 
+    // The fetch already asks the server to leave archived agents out; filtering
+    // again here answers the toggle before that refetch lands and covers agents
+    // the payload marks archived anyway.
     const groups = useMemo(
         () => groupAgentsByRepository(agents, {includeArchived, query}),
         [agents, includeArchived, query],
@@ -152,7 +158,7 @@ const AgentList = ({
                     <button
                         type='button'
                         className={`btn btn-tertiary btn-icon cursor-icon-button${includeArchived ? ' cursor-icon-button--active' : ''}`}
-                        onClick={() => setIncludeArchived((value) => !value)}
+                        onClick={onToggleArchived}
                         aria-pressed={includeArchived}
                         aria-label={archivedLabel}
                         title={archivedLabel}

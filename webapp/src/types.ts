@@ -51,7 +51,12 @@ export interface RawRun {
 export interface RawAgent {
     id?: string;
     name?: string;
+
+    // Agent lifecycle, not execution state: ACTIVE or ARCHIVED. Some payloads
+    // report the lifecycle through a boolean instead, so read both.
     status?: string;
+    archived?: boolean;
+
     env?: {type?: string};
     url?: string;
     createdAt?: string;

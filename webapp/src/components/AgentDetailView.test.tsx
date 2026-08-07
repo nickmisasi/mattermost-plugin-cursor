@@ -52,8 +52,8 @@ function useFakeEventSource() {
     });
 }
 
-function mockAgent(latestRunStatus = 'FINISHED', run: Record<string, unknown> = {}) {
-    jest.spyOn(Client, 'getAgent').mockResolvedValue({
+function agentPayload(overrides: Record<string, unknown> = {}) {
+    return {
         id: 'bc-1',
         name: 'Add README',
         status: 'ACTIVE',
@@ -65,16 +65,25 @@ function mockAgent(latestRunStatus = 'FINISHED', run: Record<string, unknown> = 
         repos: [{url: 'https://github.com/acme/bifrost', startingRef: 'main'}],
         workOnCurrentBranch: false,
         autoCreatePR: true,
-    });
-    jest.spyOn(Client, 'getRun').mockResolvedValue({
+        ...overrides,
+    };
+}
+
+function runPayload(status: string, overrides: Record<string, unknown> = {}) {
+    return {
         id: 'run-1',
         agentId: 'bc-1',
-        status: latestRunStatus,
+        status,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         git: {branches: [{repoUrl: 'github.com/acme/bifrost', branch: 'cursor/add-readme-a1b2', prUrl: 'https://github.com/acme/bifrost/pull/1'}]},
-        ...run,
-    });
+        ...overrides,
+    };
+}
+
+function mockAgent(latestRunStatus = 'FINISHED', run: Record<string, unknown> = {}) {
+    jest.spyOn(Client, 'getAgent').mockResolvedValue(agentPayload());
+    jest.spyOn(Client, 'getRun').mockResolvedValue(runPayload(latestRunStatus, run));
     jest.spyOn(Client, 'getMessages').mockResolvedValue({
         id: 'bc-1',
         messages: [
@@ -171,6 +180,59 @@ describe('AgentDetailView', () => {
 
         expect(await screen.findByText('No conversation yet.')).toBeInTheDocument();
         expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('cancels the run through the cancel endpoint and leaves the agent alone', async () => {
+        mockAgent('RUNNING');
+        jest.spyOn(Client, 'cancelRun').mockResolvedValue(undefined);
+        jest.spyOn(Client, 'archiveAgent').mockResolvedValue(undefined);
+        renderDetail();
+
+        await screen.findByText('Running');
+        fireEvent.click(screen.getByRole('button', {name: 'Agent actions'}));
+        fireEvent.click(screen.getByRole('button', {name: 'Cancel run'}));
+
+        await waitFor(() => expect(Client.cancelRun).toHaveBeenCalledWith('bc-1', 'run-1'));
+        expect(Client.archiveAgent).not.toHaveBeenCalled();
+    });
+
+    it('reports a cancelled run as cancelled even once the agent is archived upstream', async () => {
+        mockAgent('RUNNING');
+        jest.spyOn(Client, 'cancelRun').mockResolvedValue(undefined);
+        renderDetail();
+
+        await screen.findByText('Running');
+
+        // The reload after the cancel sees a terminal run on an archived agent.
+        jest.spyOn(Client, 'getAgent').mockResolvedValue(agentPayload({status: 'ARCHIVED'}));
+        jest.spyOn(Client, 'getRun').mockResolvedValue(runPayload('CANCELLED'));
+
+        fireEvent.click(screen.getByRole('button', {name: 'Agent actions'}));
+        fireEvent.click(screen.getByRole('button', {name: 'Cancel run'}));
+
+        expect(await screen.findByText('Cancelled')).toBeInTheDocument();
+        expect(screen.getByText('Archived')).toBeInTheDocument();
+    });
+
+    it('offers archive and unarchive under their own labels', async () => {
+        mockAgent('RUNNING');
+        jest.spyOn(Client, 'archiveAgent').mockResolvedValue(undefined);
+        renderDetail();
+
+        await screen.findByText('Running');
+        fireEvent.click(screen.getByRole('button', {name: 'Agent actions'}));
+        expect(screen.getByRole('button', {name: 'Archive agent'})).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Unarchive agent'})).not.toBeInTheDocument();
+
+        jest.spyOn(Client, 'getAgent').mockResolvedValue(agentPayload({status: 'ARCHIVED'}));
+        fireEvent.click(screen.getByRole('button', {name: 'Archive agent'}));
+
+        await waitFor(() => expect(Client.archiveAgent).toHaveBeenCalledWith('bc-1'));
+
+        // An archived agent takes no follow-ups, and the action reverses.
+        await waitFor(() => expect(screen.queryByPlaceholderText('Send a follow-up…')).not.toBeInTheDocument());
+        fireEvent.click(screen.getByRole('button', {name: 'Agent actions'}));
+        expect(screen.getByRole('button', {name: 'Unarchive agent'})).toBeInTheDocument();
     });
 
     it('routes a lost API key from the conversation fetch to the panel', async () => {

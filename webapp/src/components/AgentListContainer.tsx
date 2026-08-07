@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useState} from 'react';
 
 import AgentList from './AgentList';
 
@@ -13,7 +13,11 @@ interface Props {
 }
 
 const AgentListContainer = ({email, onNewAgent, onSelectAgent, onOpenSettings, onNotConfigured}: Props) => {
-    const {agents, loading, refreshing, loadingMore, nextCursor, error, refresh, loadMore} = useAgents(onNotConfigured);
+    const [includeArchived, setIncludeArchived] = useState(false);
+    const {agents, loading, refreshing, loadingMore, nextCursor, error, refresh, loadMore} = useAgents(
+        includeArchived,
+        onNotConfigured,
+    );
 
     return (
         <AgentList
@@ -24,6 +28,8 @@ const AgentListContainer = ({email, onNewAgent, onSelectAgent, onOpenSettings, o
             hasMore={Boolean(nextCursor)}
             error={error}
             email={email}
+            includeArchived={includeArchived}
+            onToggleArchived={() => setIncludeArchived((value) => !value)}
             onRefresh={refresh}
             onLoadMore={loadMore}
             onNewAgent={onNewAgent}

@@ -20,6 +20,8 @@ function renderList(agents: Agent[], overrides: Partial<React.ComponentProps<typ
             hasMore={false}
             error=''
             email='dev@example.com'
+            includeArchived={false}
+            onToggleArchived={jest.fn()}
             onRefresh={jest.fn()}
             onLoadMore={jest.fn()}
             onNewAgent={jest.fn()}
@@ -69,24 +71,52 @@ describe('AgentList', () => {
         expect(screen.queryByText('Bedrock support')).not.toBeInTheDocument();
     });
 
-    it('toggles archived agents client side without refetching', () => {
-        const onRefresh = jest.fn();
-        renderList([
-            agent({id: 'a', name: 'Old work', archived: true}),
-            agent({id: 'b', name: 'Current work'}),
-        ], {onRefresh});
+    it('hides archived agents while the filter is off, and never counts them into More', () => {
+        const agents = [
+            agent({id: 'a', name: 'Old work', archived: true, activityAt: 5}),
+            agent({id: 'b', name: 'Older work', archived: true, activityAt: 4}),
+            agent({id: 'c', name: 'Current work', activityAt: 3}),
+            agent({id: 'd', name: 'More work', activityAt: 2}),
+            agent({id: 'e', name: 'Even more work', activityAt: 1}),
+        ];
+        const {rerender} = renderList(agents);
 
         expect(screen.queryByText('Old work')).not.toBeInTheDocument();
+        expect(screen.queryByText('Older work')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: /^More/})).not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole('button', {name: 'Show archived agents'}));
+        rerender(
+            <AgentList
+                agents={agents}
+                loading={false}
+                refreshing={false}
+                loadingMore={false}
+                hasMore={false}
+                error=''
+                email='dev@example.com'
+                includeArchived={true}
+                onToggleArchived={jest.fn()}
+                onRefresh={jest.fn()}
+                onLoadMore={jest.fn()}
+                onNewAgent={jest.fn()}
+                onSelectAgent={jest.fn()}
+                onOpenSettings={jest.fn()}
+            />,
+        );
 
         expect(screen.getByText('Old work')).toBeInTheDocument();
-        expect(screen.getByText('Current work')).toBeInTheDocument();
-        expect(onRefresh).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', {name: 'More (2)'})).toBeInTheDocument();
+    });
 
-        fireEvent.click(screen.getByRole('button', {name: 'Hide archived agents'}));
+    it('flips the archived filter through its owner', () => {
+        const onToggleArchived = jest.fn();
+        renderList([agent({id: 'a'})], {onToggleArchived});
 
-        expect(screen.queryByText('Old work')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', {name: 'Show archived agents'}));
+        expect(onToggleArchived).toHaveBeenCalled();
+
+        renderList([agent({id: 'a'})], {includeArchived: true, onToggleArchived});
+        expect(screen.getByRole('button', {name: 'Hide archived agents'})).toHaveAttribute('aria-pressed', 'true');
     });
 
     it('clears the query when the search box is closed again', () => {
@@ -177,20 +207,65 @@ describe('AgentListContainer', () => {
         expect(rendered.getByRole('img', {name: 'Running'})).toBeInTheDocument();
     });
 
-    it('always fetches archived agents so the filter never refetches', async () => {
+    it('asks the server to leave archived agents out while the filter is off', async () => {
         jest.spyOn(Client, 'listAgents').mockResolvedValue({
-            items: [{id: 'bc-1', name: 'Old work', status: 'ARCHIVED', repos: [{url: 'https://github.com/acme/bifrost'}]}],
+            items: [{id: 'bc-2', name: 'Current work', status: 'ACTIVE', repos: [{url: 'https://github.com/acme/bifrost'}]}],
         });
 
         renderContainer();
 
-        await waitFor(() => expect(Client.listAgents).toHaveBeenCalledWith({limit: 100, includeArchived: true}));
-        expect(screen.queryByText('Old work')).not.toBeInTheDocument();
+        expect(await screen.findByText('Current work')).toBeInTheDocument();
+        expect(Client.listAgents).toHaveBeenCalledWith({limit: 100, includeArchived: false});
 
         fireEvent.click(screen.getByRole('button', {name: 'Show archived agents'}));
 
-        expect(screen.getByText('Old work')).toBeInTheDocument();
-        expect(Client.listAgents).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(Client.listAgents).toHaveBeenLastCalledWith({limit: 100, includeArchived: true}));
+    });
+
+    it('hides an agent the server still reports as archived', async () => {
+        const repos = [{url: 'https://github.com/acme/bifrost'}];
+        jest.spyOn(Client, 'listAgents').mockResolvedValue({
+            items: [
+                {id: 'bc-1', name: 'Old work', status: 'ARCHIVED', repos},
+                {id: 'bc-2', name: 'Current work', status: 'ACTIVE', repos},
+            ],
+        });
+
+        renderContainer();
+
+        expect(await screen.findByText('Current work')).toBeInTheDocument();
+        expect(screen.queryByText('Old work')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: /^More/})).not.toBeInTheDocument();
+    });
+
+    it('drops a freshly archived agent as soon as a refetch reports it', async () => {
+        const item = {id: 'bc-1', name: 'Old work', status: 'ACTIVE', repos: [{url: 'https://github.com/acme/bifrost'}]};
+        jest.spyOn(Client, 'listAgents').
+            mockResolvedValueOnce({items: [item]}).
+            mockResolvedValueOnce({items: [{...item, status: 'ARCHIVED'}]});
+
+        renderContainer();
+
+        expect(await screen.findByText('Old work')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', {name: 'Refresh agents'}));
+
+        await waitFor(() => expect(screen.queryByText('Old work')).not.toBeInTheDocument());
+    });
+
+    it('honours an archived flag reported as a boolean', async () => {
+        const repos = [{url: 'https://github.com/acme/bifrost'}];
+        jest.spyOn(Client, 'listAgents').mockResolvedValue({
+            items: [
+                {id: 'bc-1', name: 'Old work', archived: true, repos},
+                {id: 'bc-2', name: 'Current work', archived: false, repos},
+            ],
+        });
+
+        renderContainer();
+
+        expect(await screen.findByText('Current work')).toBeInTheDocument();
+        expect(screen.queryByText('Old work')).not.toBeInTheDocument();
     });
 
     it('appends the next page and stops offering Load more when the cursor runs out', async () => {
@@ -208,7 +283,7 @@ describe('AgentListContainer', () => {
 
         expect(await screen.findByText('Agent bc-2')).toBeInTheDocument();
         expect(screen.getByText('Agent bc-1')).toBeInTheDocument();
-        expect(Client.listAgents).toHaveBeenLastCalledWith({limit: 100, includeArchived: true, cursor: 'cursor-2'});
+        expect(Client.listAgents).toHaveBeenLastCalledWith({limit: 100, includeArchived: false, cursor: 'cursor-2'});
         await waitFor(() => expect(screen.queryByRole('button', {name: 'Load more'})).not.toBeInTheDocument());
     });
 

@@ -326,6 +326,12 @@
     }
 }
 
+.cursor-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
 .cursor-status-badge {
     display: inline-block;
     padding: 2px 8px;
@@ -350,6 +356,11 @@
 .cursor-status-badge--error {
     background: rgba(var(--dnd-indicator-rgb), 0.12);
     color: var(--dnd-indicator);
+}
+
+.cursor-status-badge--archived {
+    border: 1px solid rgba(var(--center-channel-color-rgb), 0.16);
+    background: transparent;
 }
 
 /* Setup and forms. */
