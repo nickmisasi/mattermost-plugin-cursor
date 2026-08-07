@@ -6,6 +6,20 @@ import {isActiveRunStatus} from '../types';
 import {withRunResult} from '../utils/conversation';
 import {normalizeAgent, normalizeMessages, normalizeRun} from '../utils/normalize';
 
+/**
+ * The conversation and run lookups are supporting detail: a plain failure just
+ * means less is rendered. A lost API key still has to reach the panel, though,
+ * so that error is not swallowed.
+ */
+function optional<T>(request: Promise<T>): Promise<T | null> {
+    return request.catch((err: unknown) => {
+        if (isNotConfiguredError(err)) {
+            throw err;
+        }
+        return null;
+    });
+}
+
 export interface AgentDetailState {
     agent: Agent | null;
     run: Run | null;
@@ -40,7 +54,7 @@ export function useAgentDetail(agentId: string, onNotConfigured: () => void): Ag
         try {
             const [agentPayload, messagePayload] = await Promise.all([
                 Client.getAgent(agentId),
-                Client.getMessages(agentId).catch(() => null),
+                optional(Client.getMessages(agentId)),
             ]);
 
             if (!mounted.current) {
@@ -53,7 +67,7 @@ export function useAgentDetail(agentId: string, onNotConfigured: () => void): Ag
             setError('');
 
             if (nextAgent?.latestRunId) {
-                const runPayload = await Client.getRun(agentId, nextAgent.latestRunId).catch(() => null);
+                const runPayload = await optional(Client.getRun(agentId, nextAgent.latestRunId));
                 if (mounted.current) {
                     setRun(normalizeRun(runPayload));
                 }
@@ -81,10 +95,9 @@ export function useAgentDetail(agentId: string, onNotConfigured: () => void): Ag
         load();
     }, [load]);
 
-    const reload = useCallback(() => load(), [load]);
     const messages = useMemo(() => withRunResult(fetchedMessages, run), [fetchedMessages, run]);
 
-    return {agent, run, messages, loading, error, reload};
+    return {agent, run, messages, loading, error, reload: load};
 }
 
 export function resolveRunStatus(agent: Agent | null, run: Run | null) {

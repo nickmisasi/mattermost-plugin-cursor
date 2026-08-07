@@ -5,7 +5,7 @@ import AgentListContainer from './AgentListContainer';
 import NewAgentView from './NewAgentView';
 import SetupView from './SetupView';
 
-import Client, {errorMessage, isNotConfiguredError} from '../client';
+import Client, {errorMessage} from '../client';
 
 type View =
     | {name: 'list'}
@@ -24,16 +24,12 @@ const Panel = () => {
         setCheckingKey(true);
         setKeyError('');
         try {
+            // A missing key is reported as `configured: false`, not as an error.
             const status = await Client.getKeyStatus();
-            setConfigured(Boolean(status?.configured));
-            setEmail(status?.email ?? '');
+            setConfigured(status.configured);
+            setEmail(status.email);
         } catch (err) {
-            if (isNotConfiguredError(err)) {
-                setConfigured(false);
-                setEmail('');
-            } else {
-                setKeyError(errorMessage(err, 'Could not check your Cursor connection.'));
-            }
+            setKeyError(errorMessage(err, 'Could not check your Cursor connection.'));
         } finally {
             setCheckingKey(false);
         }
@@ -116,6 +112,7 @@ const Panel = () => {
     case 'detail':
         return (
             <AgentDetailView
+                key={view.agentId}
                 agentId={view.agentId}
                 onBack={showList}
                 onNotConfigured={handleNotConfigured}

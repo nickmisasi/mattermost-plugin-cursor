@@ -27,15 +27,18 @@ src/
   client.ts                 Typed fetch wrapper, ClientError, Client singleton
   types.ts                  Raw (passthrough) + normalized models
   hooks/
-    useAgents.ts            List fetch, 30s polling, refresh on window focus
+    useAgents.ts            List fetch, paging, 30s polling, refresh on focus
     useAgentDetail.ts       Agent + latest run + conversation
     useRunStream.ts         SSE subscription for an active run
   utils/
+    guards.ts               isRecord / asString / asArray / asRunStatus
     time.ts                 relativeTime / formatDateTime / formatDuration
     normalize.ts            Defensive API payload -> UI model
     grouping.ts             groupAgentsByRepository (pure, unit tested)
+    conversation.ts         Folds a terminal run's result into the messages
     status.ts               Run status -> variant/label
     segments.ts             Splits assistant text on code fences
+  testing/fixtures.ts       Shared Agent fixture (imported only by tests)
   components/               Panel (state router) + views
   components/cursor.css     All plugin styling, imported once from index.tsx
 ```
@@ -87,7 +90,11 @@ Two consequences worth remembering:
   assistant message when the conversation fetch lags behind.
 
 `includeArchived` defaults to **true** upstream, so `useAgents` always sends it
-explicitly (`false` unless the user turns the archived filter on).
+explicitly. It sends `true` unconditionally and the archived filter is applied
+while grouping, which keeps the toggle instant and means no request can be left
+in flight for a filter the user has already changed. Every list response is
+epoch-checked so a slow reply can never overwrite fresher state, and paging
+appends by id so duplicates across pages collapse.
 
 ## Streaming
 

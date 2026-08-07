@@ -22,12 +22,13 @@ const AgentDetailView = ({agentId, onBack, onNotConfigured, onDeleted}: Props) =
     const [actionError, setActionError] = useState('');
     const [busy, setBusy] = useState(false);
 
-    const runStatus = resolveRunStatus(agent, run);
     const active = hasActiveRun(agent, run);
     const runId = run?.id || agent?.latestRunId || '';
+    const stream = useRunStream(agentId, runId, active, reload);
 
-    const onStreamFinished = useCallback(() => reload(), [reload]);
-    const stream = useRunStream(agentId, runId, active, onStreamFinished);
+    // The stream reports status changes before the next refetch lands, so it
+    // wins over the last fetched run while it is connected.
+    const runStatus = stream.status ?? resolveRunStatus(agent, run);
 
     const perform = useCallback(async (action: () => Promise<unknown>, failure: string, afterSuccess?: () => void) => {
         setBusy(true);

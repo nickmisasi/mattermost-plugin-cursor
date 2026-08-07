@@ -266,6 +266,11 @@
     text-align: right;
 }
 
+.cursor-load-more {
+    width: calc(100% - 32px);
+    margin: 8px 16px 0;
+}
+
 .cursor-more-row {
     padding: 4px 16px 4px 40px;
     border: none;

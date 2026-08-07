@@ -1,3 +1,4 @@
+import {asArray, asRunStatus, asString, isRecord} from './guards';
 import {toTimestamp} from './time';
 
 import type {
@@ -10,28 +11,9 @@ import type {
     RawRun,
     RepositoryOption,
     Run,
-    RunStatus,
 } from '../types';
-import {RUN_STATUSES} from '../types';
 
 export const NO_REPOSITORY = 'No repository';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function asArray(value: unknown): unknown[] {
-    return Array.isArray(value) ? value : [];
-}
-
-function asString(value: unknown): string {
-    return typeof value === 'string' ? value : '';
-}
-
-function asRunStatus(value: unknown): RunStatus | undefined {
-    const candidate = asString(value).toUpperCase() as RunStatus;
-    return RUN_STATUSES.includes(candidate) ? candidate : undefined;
-}
 
 function listItems(payload: unknown, key: string): unknown[] {
     if (Array.isArray(payload)) {

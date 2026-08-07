@@ -1,9 +1,56 @@
-import {fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import React from 'react';
 
 import AgentDetailView from './AgentDetailView';
 
-import Client, {ClientError} from '../client';
+import Client, {API_KEY_NOT_CONFIGURED, ClientError} from '../client';
+
+type Listener = (event: MessageEvent) => void;
+
+/** jsdom has no EventSource, so the streaming tests install this in its place. */
+class FakeEventSource {
+    static readonly CLOSED = 2;
+
+    static last: FakeEventSource | null = null;
+
+    readyState = 1;
+
+    onerror: (() => void) | null = null;
+
+    private listeners = new Map<string, Listener[]>();
+
+    constructor() {
+        FakeEventSource.last = this;
+    }
+
+    addEventListener(name: string, handler: Listener) {
+        this.listeners.set(name, [...(this.listeners.get(name) ?? []), handler]);
+    }
+
+    close() {
+        this.readyState = FakeEventSource.CLOSED;
+    }
+
+    emit(name: string, data: unknown) {
+        const event = {data: JSON.stringify(data)} as MessageEvent;
+        act(() => {
+            for (const handler of this.listeners.get(name) ?? []) {
+                handler(event);
+            }
+        });
+    }
+}
+
+function useFakeEventSource() {
+    beforeEach(() => {
+        FakeEventSource.last = null;
+        (global as {EventSource?: unknown}).EventSource = FakeEventSource;
+    });
+
+    afterEach(() => {
+        delete (global as {EventSource?: unknown}).EventSource;
+    });
+}
 
 function mockAgent(latestRunStatus = 'FINISHED', run: Record<string, unknown> = {}) {
     jest.spyOn(Client, 'getAgent').mockResolvedValue({
@@ -115,5 +162,78 @@ describe('AgentDetailView', () => {
         renderDetail();
 
         expect(await screen.findByRole('alert')).toHaveTextContent('Agent not found.');
+    });
+
+    it('still renders when the conversation fetch fails', async () => {
+        mockAgent();
+        jest.spyOn(Client, 'getMessages').mockRejectedValue(new ClientError(500, 'upstream error'));
+        renderDetail();
+
+        expect(await screen.findByText('No conversation yet.')).toBeInTheDocument();
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('routes a lost API key from the conversation fetch to the panel', async () => {
+        const onNotConfigured = jest.fn();
+        mockAgent();
+        jest.spyOn(Client, 'getMessages').mockRejectedValue(
+            new ClientError(403, 'Connect your Cursor account', API_KEY_NOT_CONFIGURED),
+        );
+
+        render(
+            <AgentDetailView
+                agentId='bc-1'
+                onBack={jest.fn()}
+                onNotConfigured={onNotConfigured}
+                onDeleted={jest.fn()}
+            />,
+        );
+
+        await waitFor(() => expect(onNotConfigured).toHaveBeenCalled());
+    });
+});
+
+describe('AgentDetailView streaming', () => {
+    useFakeEventSource();
+
+    it('flips the badge live and refetches once the run is done', async () => {
+        mockAgent('RUNNING');
+        renderDetail();
+
+        expect(await screen.findByText('Running')).toBeInTheDocument();
+        const source = FakeEventSource.last;
+        expect(source).not.toBeNull();
+
+        source?.emit('assistant', {text: 'Reading the README'});
+        expect(screen.getByText('Reading the README')).toBeInTheDocument();
+
+        source?.emit('tool_call', {callId: 'call-1', name: 'read_file', status: 'running'});
+        expect(screen.getByText('Running read_file')).toBeInTheDocument();
+
+        source?.emit('status', {runId: 'run-1', status: 'FINISHED'});
+        expect(screen.getByText('Finished')).toBeInTheDocument();
+
+        source?.emit('done', {});
+        expect(source?.readyState).toBe(FakeEventSource.CLOSED);
+        await waitFor(() => expect(Client.getAgent).toHaveBeenCalledTimes(2));
+    });
+
+    it('reports a stream error and stops streaming', async () => {
+        mockAgent('RUNNING');
+        renderDetail();
+
+        await screen.findByText('Running');
+        FakeEventSource.last?.emit('error', {text: 'The run could not be streamed.'});
+
+        expect(await screen.findByRole('alert')).toHaveTextContent('The run could not be streamed.');
+        expect(FakeEventSource.last?.readyState).toBe(FakeEventSource.CLOSED);
+    });
+
+    it('does not open a stream for a terminal run', async () => {
+        mockAgent('FINISHED');
+        renderDetail();
+
+        await screen.findByText('Finished');
+        expect(FakeEventSource.last).toBeNull();
     });
 });

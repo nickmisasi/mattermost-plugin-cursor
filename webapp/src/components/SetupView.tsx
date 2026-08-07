@@ -31,7 +31,7 @@ const SetupView = ({mode, email = '', onConnected, onDisconnected, onBack}: Prop
         try {
             const status = await Client.setKey(apiKey.trim());
             setApiKey('');
-            onConnected(status?.email ?? '');
+            onConnected(status.email);
         } catch (err) {
             setError(errorMessage(err, 'That API key could not be verified.'));
         } finally {

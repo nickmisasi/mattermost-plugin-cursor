@@ -10,11 +10,12 @@ interface Props {
     agents: Agent[];
     loading: boolean;
     refreshing: boolean;
+    loadingMore: boolean;
+    hasMore: boolean;
     error: string;
     email: string;
-    includeArchived: boolean;
-    onToggleArchived: () => void;
     onRefresh: () => void;
+    onLoadMore: () => void;
     onNewAgent: () => void;
     onSelectAgent: (agentId: string) => void;
     onOpenSettings: () => void;
@@ -24,17 +25,19 @@ const AgentList = ({
     agents,
     loading,
     refreshing,
+    loadingMore,
+    hasMore,
     error,
     email,
-    includeArchived,
-    onToggleArchived,
     onRefresh,
+    onLoadMore,
     onNewAgent,
     onSelectAgent,
     onOpenSettings,
 }: Props) => {
     const [searchOpen, setSearchOpen] = useState(false);
     const [query, setQuery] = useState('');
+    const [includeArchived, setIncludeArchived] = useState(false);
     const searchInput = useRef<HTMLInputElement>(null);
 
     const groups = useMemo(
@@ -42,15 +45,16 @@ const AgentList = ({
         [agents, includeArchived, query],
     );
 
+    const archivedLabel = includeArchived ? 'Hide archived agents' : 'Show archived agents';
+
     const toggleSearch = () => {
-        setSearchOpen((open) => {
-            if (open) {
-                setQuery('');
-            } else {
-                window.setTimeout(() => searchInput.current?.focus(), 0);
-            }
-            return !open;
-        });
+        const opening = !searchOpen;
+        setSearchOpen(opening);
+        if (opening) {
+            window.setTimeout(() => searchInput.current?.focus(), 0);
+        } else {
+            setQuery('');
+        }
     };
 
     const renderBody = () => {
@@ -58,13 +62,27 @@ const AgentList = ({
             return <p className='cursor-placeholder'>{'Loading your Cloud Agents…'}</p>;
         }
         if (groups.length) {
-            return groups.map((group) => (
-                <RepoGroup
-                    key={group.key}
-                    group={group}
-                    onSelect={onSelectAgent}
-                />
-            ));
+            return (
+                <React.Fragment>
+                    {groups.map((group) => (
+                        <RepoGroup
+                            key={group.key}
+                            group={group}
+                            onSelect={onSelectAgent}
+                        />
+                    ))}
+                    {hasMore ? (
+                        <button
+                            type='button'
+                            className='btn btn-tertiary cursor-load-more'
+                            onClick={onLoadMore}
+                            disabled={loadingMore}
+                        >
+                            {loadingMore ? 'Loading…' : 'Load more'}
+                        </button>
+                    ) : null}
+                </React.Fragment>
+            );
         }
         if (query.trim()) {
             return <p className='cursor-placeholder'>{`No agents match “${query.trim()}”.`}</p>;
@@ -134,10 +152,10 @@ const AgentList = ({
                     <button
                         type='button'
                         className={`btn btn-tertiary btn-icon cursor-icon-button${includeArchived ? ' cursor-icon-button--active' : ''}`}
-                        onClick={onToggleArchived}
+                        onClick={() => setIncludeArchived((value) => !value)}
                         aria-pressed={includeArchived}
-                        aria-label='Show archived agents'
-                        title={includeArchived ? 'Hide archived agents' : 'Show archived agents'}
+                        aria-label={archivedLabel}
+                        title={archivedLabel}
                     >
                         <i className='icon icon-archive-outline'/>
                     </button>

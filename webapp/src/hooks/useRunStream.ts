@@ -2,7 +2,7 @@ import {useEffect, useRef, useState} from 'react';
 
 import Client from '../client';
 import type {RunStatus} from '../types';
-import {RUN_STATUSES} from '../types';
+import {asRunStatus, isRecord} from '../utils/guards';
 
 export interface RunStreamState {
     text: string;
@@ -22,10 +22,6 @@ function parseData(raw: string): unknown {
     }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function extractText(data: unknown): string {
     if (typeof data === 'string') {
         return data;
@@ -43,11 +39,7 @@ function extractText(data: unknown): string {
 }
 
 function extractStatus(data: unknown): RunStatus | undefined {
-    if (!isRecord(data)) {
-        return undefined;
-    }
-    const candidate = String(data.status ?? '').toUpperCase() as RunStatus;
-    return RUN_STATUSES.includes(candidate) ? candidate : undefined;
+    return isRecord(data) ? asRunStatus(data.status) : undefined;
 }
 
 function describeToolCall(data: unknown): string {
@@ -125,7 +117,7 @@ export function useRunStream(agentId: string, runId: string, enabled: boolean, o
             }],
             ['error', (event) => {
                 const message = extractText(parseData(event.data)) || 'The agent stream reported an error.';
-                setState((prev) => ({...prev, error: message, activity: '', streaming: false}));
+                setState((prev) => ({...prev, error: message}));
                 finish();
             }],
             ['done', () => finish()],
@@ -142,12 +134,7 @@ export function useRunStream(agentId: string, runId: string, enabled: boolean, o
             }
         };
 
-        return () => {
-            for (const [name, handler] of listeners) {
-                source.removeEventListener(name, handler as EventListener);
-            }
-            close();
-        };
+        return close;
     }, [agentId, runId, enabled]);
 
     return state;
