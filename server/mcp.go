@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/mattermost/mattermost-plugin-agents/v2/external/pluginmcp"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -134,17 +135,13 @@ func (p *Plugin) mcpCreateAgent(
 	if failure != nil {
 		return failure, createAgentOutput{}, nil
 	}
-	request := cursorapi.CreateAgentRequest{
-		Prompt: cursorapi.Prompt{Text: input.Prompt},
-		Repos: []cursorapi.RepoConfig{{
-			URL:         input.Repository,
-			StartingRef: input.Ref,
-		}},
-		AutoCreatePR: input.AutoCreatePR,
-	}
-	if input.Model != "" {
-		request.Model = &cursorapi.ModelRef{ID: input.Model}
-	}
+	request := cursorapi.NewCreateAgentRequest(
+		input.Prompt,
+		input.Repository,
+		input.Ref,
+		input.Model,
+		input.AutoCreatePR,
+	)
 	response, err := client.CreateAgent(ctx, request)
 	if err != nil {
 		return toolError(err.Error()), createAgentOutput{}, nil
@@ -188,10 +185,10 @@ func (p *Plugin) mcpGetAgent(
 	if agent.LatestRunID == "" {
 		return nil, output, nil
 	}
-	hydrated, run, ok := p.hydrateAgent(ctx, userID, client, agent.AgentSummary, true)
+	hydrated, ok := p.hydrateAgent(ctx, userID, client, agent.AgentSummary, true)
 	if ok {
-		output.Status = run.Status
-		output.Summary = run.Result
+		output.Status = hydrated.RunStatus
+		output.Summary = hydrated.Result
 	}
 	output.Branch = hydrated.Branch
 	output.PRURL = hydrated.PRURL
@@ -281,10 +278,7 @@ func (p *Plugin) mcpGetAgentConversation(
 }
 
 func (p *Plugin) mcpClient(ctx context.Context) (*cursorapi.Client, string, *mcp.CallToolResult) {
-	userID := ""
-	if p.getMCPUserID != nil {
-		userID = p.getMCPUserID(ctx)
-	}
+	userID := p.getMCPUserID(ctx)
 	if userID == "" {
 		return nil, "", toolError("No acting Mattermost user was provided")
 	}
@@ -311,21 +305,22 @@ func truncateMessages(messages []cursorapi.Message, budget int) getAgentConversa
 		}
 		text := message.Text
 		if len(text) > remaining {
-			text = text[len(text)-remaining:]
+			offset := len(text) - remaining
+			for offset < len(text) && !utf8.RuneStart(text[offset]) {
+				offset++
+			}
+			text = text[offset:]
 			truncated = true
+			remaining = 0
+		} else {
+			remaining -= len(text)
 		}
 		reversed = append(reversed, conversationMessage{Type: message.Type, Text: text})
-		remaining -= len(text)
-		if truncated {
-			break
-		}
 	}
+	slices.Reverse(reversed)
 	output := getAgentConversationOutput{
-		Messages:  make([]conversationMessage, len(reversed)),
+		Messages:  reversed,
 		Truncated: truncated,
-	}
-	for index := range reversed {
-		output.Messages[len(reversed)-1-index] = reversed[index]
 	}
 	return output
 }

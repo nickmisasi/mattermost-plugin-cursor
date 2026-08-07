@@ -59,7 +59,7 @@ func (m *memoryKV) KVDelete(key string) *model.AppError {
 	return nil
 }
 
-func newTestPlugin(t *testing.T, upstream http.Handler) (*Plugin, *memoryKV, *httptest.Server) {
+func newTestPlugin(t *testing.T, upstream http.Handler) (*Plugin, *memoryKV) {
 	t.Helper()
 	server := httptest.NewServer(upstream)
 	t.Cleanup(server.Close)
@@ -75,7 +75,7 @@ func newTestPlugin(t *testing.T, upstream http.Handler) (*Plugin, *memoryKV, *ht
 	p.hydration.initialize(hydrationCacheCapacity)
 	p.initRouter()
 	p.getMCPUserID = func(_ context.Context) string { return testUserID }
-	return p, kv, server
+	return p, kv
 }
 
 func authenticatedRequest(method, target string, body io.Reader) *http.Request {

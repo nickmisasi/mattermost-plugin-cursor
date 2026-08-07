@@ -33,8 +33,8 @@ type encryptedKeyRecord struct {
 }
 
 type KeyStore struct {
-	kv  keyValueStore
-	key []byte
+	kv   keyValueStore
+	aead cipher.AEAD
 }
 
 func NewKeyStore(kv keyValueStore) (*KeyStore, error) {
@@ -42,7 +42,15 @@ func NewKeyStore(kv keyValueStore) (*KeyStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &KeyStore{kv: kv, key: key}, nil
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("initialize API key cipher: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("initialize API key encryption: %w", err)
+	}
+	return &KeyStore{kv: kv, aead: aead}, nil
 }
 
 func loadOrCreateEncryptionKey(kv keyValueStore) ([]byte, error) {
@@ -80,18 +88,14 @@ func loadOrCreateEncryptionKey(kv keyValueStore) ([]byte, error) {
 }
 
 func (s *KeyStore) Set(userID, apiKey, email string) error {
-	aead, err := s.aead()
-	if err != nil {
-		return err
-	}
-	nonce := make([]byte, aead.NonceSize())
+	nonce := make([]byte, s.aead.NonceSize())
 	if _, readErr := io.ReadFull(rand.Reader, nonce); readErr != nil {
 		return fmt.Errorf("generate API key nonce: %w", readErr)
 	}
 	record := encryptedKeyRecord{
 		Email:      email,
 		Nonce:      nonce,
-		Ciphertext: aead.Seal(nil, nonce, []byte(apiKey), []byte(userID)),
+		Ciphertext: s.aead.Seal(nil, nonce, []byte(apiKey), []byte(userID)),
 	}
 	encoded, err := json.Marshal(record)
 	if err != nil {
@@ -108,11 +112,7 @@ func (s *KeyStore) Get(userID string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	aead, err := s.aead()
-	if err != nil {
-		return "", "", err
-	}
-	plaintext, err := aead.Open(nil, record.Nonce, record.Ciphertext, []byte(userID))
+	plaintext, err := s.aead.Open(nil, record.Nonce, record.Ciphertext, []byte(userID))
 	if err != nil {
 		return "", "", fmt.Errorf("decrypt Cursor API key: %w", err)
 	}
@@ -150,16 +150,4 @@ func (s *KeyStore) getRecord(userID string) (encryptedKeyRecord, error) {
 		return encryptedKeyRecord{}, fmt.Errorf("decode encrypted API key: %w", err)
 	}
 	return record, nil
-}
-
-func (s *KeyStore) aead() (cipher.AEAD, error) {
-	block, err := aes.NewCipher(s.key)
-	if err != nil {
-		return nil, fmt.Errorf("initialize API key cipher: %w", err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("initialize API key encryption: %w", err)
-	}
-	return aead, nil
 }

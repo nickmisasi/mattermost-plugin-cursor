@@ -17,7 +17,7 @@ import (
 )
 
 func TestAuthenticationMiddleware(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -67,7 +67,7 @@ func TestKeyStoreEncryptionRoundTrip(t *testing.T) {
 }
 
 func TestKeyEndpoints(t *testing.T) {
-	p, kv, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, kv := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/me", r.URL.Path)
 		assert.Equal(t, "Bearer valid-key", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
@@ -108,7 +108,7 @@ func TestKeyEndpoints(t *testing.T) {
 }
 
 func TestPutKeyRejectsInvalidKey(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = io.WriteString(w, `{"error":{"code":"unauthorized","message":"no"}}`)
 	}))
@@ -123,7 +123,7 @@ func TestPutKeyRejectsInvalidKey(t *testing.T) {
 
 func TestCreateAgentBoundaryMapping(t *testing.T) {
 	var received map[string]any
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/v1/agents", r.URL.Path)
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
@@ -159,7 +159,7 @@ func TestCreateAgentBoundaryMapping(t *testing.T) {
 
 func TestFollowupBoundaryMapping(t *testing.T) {
 	var received map[string]any
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/v1/agents/bc-1/runs", r.URL.Path)
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
@@ -190,7 +190,7 @@ func TestFollowupBoundaryMapping(t *testing.T) {
 }
 
 func TestProxyPassthroughAndErrorMirroring(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/models":
@@ -242,7 +242,7 @@ func TestProxyPassthroughAndErrorMirroring(t *testing.T) {
 }
 
 func TestProxyRequiresConfiguredAPIKey(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("upstream should not be called")
 	}))
 	recorder := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestListAgentsHydratesAndCachesItems(t *testing.T) {
 	var agentBCalls atomic.Int32
 	var runBCalls atomic.Int32
 
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/agents":
@@ -371,7 +371,7 @@ func TestListAgentsHydratesAndCachesItems(t *testing.T) {
 }
 
 func TestMessagesProxyUsesLegacyConversationEndpoint(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v0/agents/bc-1/conversation", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
@@ -395,7 +395,7 @@ func TestMessagesProxyUsesLegacyConversationEndpoint(t *testing.T) {
 
 func TestSSEProxy(t *testing.T) {
 	var lastEventID string
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		lastEventID = r.Header.Get("Last-Event-ID")
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("X-Cursor-Stream-Retention-Seconds", "300")
@@ -424,7 +424,7 @@ func TestSSEProxy(t *testing.T) {
 
 func TestRepositoriesResponseIsCachedPerUser(t *testing.T) {
 	var calls atomic.Int32
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/repositories", r.URL.Path)
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -445,7 +445,7 @@ func TestRepositoriesResponseIsCachedPerUser(t *testing.T) {
 }
 
 func TestNoContentProxyEndpoints(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"ok"}`)
 	}))

@@ -20,6 +20,21 @@ type CreateAgentRequest struct {
 	AutoCreatePR *bool        `json:"autoCreatePR,omitempty"`
 }
 
+func NewCreateAgentRequest(prompt, repository, ref, model string, autoCreatePR *bool) CreateAgentRequest {
+	request := CreateAgentRequest{
+		Prompt: Prompt{Text: prompt},
+		Repos: []RepoConfig{{
+			URL:         repository,
+			StartingRef: ref,
+		}},
+		AutoCreatePR: autoCreatePR,
+	}
+	if model != "" {
+		request.Model = &ModelRef{ID: model}
+	}
+	return request
+}
+
 type CreateRunRequest struct {
 	Prompt Prompt `json:"prompt"`
 }
@@ -108,6 +123,7 @@ type HydratedAgent struct {
 	Branch    string       `json:"branch,omitempty"`
 	PRURL     string       `json:"prUrl,omitempty"`
 	RunStatus string       `json:"runStatus"`
+	Result    string       `json:"-"`
 }
 
 type HydratedListAgentsResponse struct {

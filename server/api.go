@@ -17,6 +17,8 @@ import (
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursorapi"
 )
 
+const cursorAPIFailureMessage = "Failed to call Cursor API"
+
 type userIDContextKey struct{}
 
 type cachedResponse struct {
@@ -24,36 +26,36 @@ type cachedResponse struct {
 	expiresAt time.Time
 }
 
+type cacheKey struct {
+	name   string
+	userID string
+}
+
 type responseCache struct {
-	mu           sync.Mutex
-	ttl          time.Duration
-	models       map[string]cachedResponse
-	repositories map[string]cachedResponse
+	mu      sync.Mutex
+	ttl     time.Duration
+	entries map[cacheKey]cachedResponse
 }
 
 func (c *responseCache) initialize(ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.ttl = ttl
-	c.models = make(map[string]cachedResponse)
-	c.repositories = make(map[string]cachedResponse)
+	c.entries = make(map[cacheKey]cachedResponse)
 }
 
 func (c *responseCache) get(cacheName, userID string) (cursorapi.Response, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var entry cachedResponse
-	var ok bool
-	if cacheName == "models" {
-		entry, ok = c.models[userID]
-	} else {
-		entry, ok = c.repositories[userID]
-	}
-	if !ok || time.Now().After(entry.expiresAt) {
+	key := cacheKey{name: cacheName, userID: userID}
+	entry, ok := c.entries[key]
+	if !ok {
 		return cursorapi.Response{}, false
 	}
-	entry.response.Body = append([]byte(nil), entry.response.Body...)
-	entry.response.Header = entry.response.Header.Clone()
+	if time.Now().After(entry.expiresAt) {
+		delete(c.entries, key)
+		return cursorapi.Response{}, false
+	}
 	return entry.response, true
 }
 
@@ -68,18 +70,17 @@ func (c *responseCache) set(cacheName, userID string, response cursorapi.Respons
 		},
 		expiresAt: time.Now().Add(c.ttl),
 	}
-	if cacheName == "models" {
-		c.models[userID] = entry
-	} else {
-		c.repositories[userID] = entry
-	}
+	c.entries[cacheKey{name: cacheName, userID: userID}] = entry
 }
 
 func (c *responseCache) invalidate(userID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.models, userID)
-	delete(c.repositories, userID)
+	for key := range c.entries {
+		if key.userID == userID {
+			delete(c.entries, key)
+		}
+	}
 }
 
 func (p *Plugin) initRouter() {
@@ -125,6 +126,7 @@ func userIDFromRequest(r *http.Request) string {
 func (p *Plugin) getKey(w http.ResponseWriter, r *http.Request) {
 	configured, email, err := p.keyStore.Info(userIDFromRequest(r))
 	if err != nil {
+		p.logError("Failed to read API key configuration", err)
 		writeError(w, http.StatusInternalServerError, "Failed to read API key configuration", "")
 		return
 	}
@@ -148,6 +150,7 @@ func (p *Plugin) putKey(w http.ResponseWriter, r *http.Request) {
 
 	response, err := p.cursorClient(body.APIKey).GetMe(r.Context())
 	if err != nil {
+		p.logError("Failed to validate Cursor API key", err)
 		writeError(w, http.StatusBadGateway, "Failed to validate API key", "")
 		return
 	}
@@ -161,11 +164,13 @@ func (p *Plugin) putKey(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := cursorapi.Decode[cursorapi.APIKeyInfo](response)
 	if err != nil {
+		p.logError("Failed to decode Cursor account response", err)
 		writeError(w, http.StatusBadGateway, "Cursor returned an invalid account response", "")
 		return
 	}
 	userID := userIDFromRequest(r)
 	if err := p.keyStore.Set(userID, body.APIKey, info.UserEmail); err != nil {
+		p.logError("Failed to store Cursor API key", err)
 		writeError(w, http.StatusInternalServerError, "Failed to store API key", "")
 		return
 	}
@@ -177,6 +182,7 @@ func (p *Plugin) putKey(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) deleteKey(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	if err := p.keyStore.Delete(userID); err != nil {
+		p.logError("Failed to delete Cursor API key", err)
 		writeError(w, http.StatusInternalServerError, "Failed to delete API key", "")
 		return
 	}
@@ -199,7 +205,8 @@ func (p *Plugin) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := client.ListAgents(r.Context(), query)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Failed to call Cursor API", "")
+		p.logError(cursorAPIFailureMessage, err)
+		writeError(w, http.StatusBadGateway, cursorAPIFailureMessage, "")
 		return
 	}
 	if !response.Successful() {
@@ -208,6 +215,7 @@ func (p *Plugin) listAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := cursorapi.Decode[cursorapi.ListAgentsResponse](response)
 	if err != nil {
+		p.logError("Failed to decode Cursor agents response", err)
 		writeError(w, http.StatusBadGateway, "Cursor returned an invalid agents response", "")
 		return
 	}
@@ -242,17 +250,13 @@ func (p *Plugin) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "prompt and repository are required", "")
 		return
 	}
-	request := cursorapi.CreateAgentRequest{
-		Prompt: cursorapi.Prompt{Text: body.Prompt},
-		Repos: []cursorapi.RepoConfig{{
-			URL:         body.Repository,
-			StartingRef: body.Ref,
-		}},
-		AutoCreatePR: body.AutoCreatePR,
-	}
-	if body.Model != "" {
-		request.Model = &cursorapi.ModelRef{ID: body.Model}
-	}
+	request := cursorapi.NewCreateAgentRequest(
+		body.Prompt,
+		body.Repository,
+		body.Ref,
+		body.Model,
+		body.AutoCreatePR,
+	)
 	client, ok := p.clientForRequest(w, r)
 	if !ok {
 		return
@@ -351,6 +355,7 @@ func (p *Plugin) cancelRun(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) streamRun(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		p.logError("Failed to start Cursor stream", errors.New("response writer does not support flushing"))
 		writeError(w, http.StatusInternalServerError, "Streaming is not supported", "")
 		return
 	}
@@ -361,13 +366,15 @@ func (p *Plugin) streamRun(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	response, err := client.StreamRun(r.Context(), vars["id"], vars["runId"], r.Header.Get("Last-Event-ID"))
 	if err != nil {
+		p.logError("Failed to connect to Cursor stream", err)
 		writeError(w, http.StatusBadGateway, "Failed to connect to Cursor stream", "")
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if !response.Successful() {
 		body, readErr := io.ReadAll(response.Body)
 		if readErr != nil {
+			p.logError("Failed to read Cursor stream response", readErr)
 			writeError(w, http.StatusBadGateway, "Failed to read Cursor stream response", "")
 			return
 		}
@@ -398,11 +405,8 @@ func (p *Plugin) streamRun(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				if line != "" {
-					flusher.Flush()
-				}
-				return
+			if errors.Is(readErr, io.EOF) && line != "" {
+				flusher.Flush()
 			}
 			return
 		}
@@ -438,7 +442,8 @@ func (p *Plugin) proxyCached(
 	}
 	response, err := fetch(client)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Failed to call Cursor API", "")
+		p.logError(cursorAPIFailureMessage, err)
+		writeError(w, http.StatusBadGateway, cursorAPIFailureMessage, "")
 		return
 	}
 	if response.Successful() {
@@ -459,6 +464,7 @@ func (p *Plugin) clientForRequest(w http.ResponseWriter, r *http.Request) (*curs
 		return nil, false
 	}
 	if err != nil {
+		p.logError("Failed to load Cursor API key", err)
 		writeError(w, http.StatusInternalServerError, "Failed to load API key", "")
 		return nil, false
 	}
@@ -467,7 +473,8 @@ func (p *Plugin) clientForRequest(w http.ResponseWriter, r *http.Request) (*curs
 
 func (p *Plugin) proxyResponse(w http.ResponseWriter, response cursorapi.Response, err error) {
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Failed to call Cursor API", "")
+		p.logError(cursorAPIFailureMessage, err)
+		writeError(w, http.StatusBadGateway, cursorAPIFailureMessage, "")
 		return
 	}
 	writeUpstream(w, response)
@@ -475,7 +482,8 @@ func (p *Plugin) proxyResponse(w http.ResponseWriter, response cursorapi.Respons
 
 func (p *Plugin) proxyNoContent(w http.ResponseWriter, response cursorapi.Response, err error) {
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "Failed to call Cursor API", "")
+		p.logError(cursorAPIFailureMessage, err)
+		writeError(w, http.StatusBadGateway, cursorAPIFailureMessage, "")
 		return
 	}
 	if !response.Successful() {

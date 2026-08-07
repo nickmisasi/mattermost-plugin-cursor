@@ -29,6 +29,10 @@ type StreamResponse struct {
 	Body       io.ReadCloser
 }
 
+func (r StreamResponse) Successful() bool {
+	return r.StatusCode >= http.StatusOK && r.StatusCode < http.StatusMultipleChoices
+}
+
 type APIError struct {
 	StatusCode int
 	Body       []byte

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -15,7 +16,7 @@ import (
 )
 
 func TestMCPToolHandlersHappyPath(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents":
@@ -158,7 +159,7 @@ func TestMCPToolHandlersHappyPath(t *testing.T) {
 }
 
 func TestMCPToolHandlersMissingKey(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("upstream should not be called without an API key")
 	}))
 	ctx := context.Background()
@@ -221,7 +222,7 @@ func TestMCPToolHandlersMissingKey(t *testing.T) {
 }
 
 func TestMCPGetAgentFallsBackToAgentStatus(t *testing.T) {
-	p, _, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/agents/bc-idle", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
@@ -253,4 +254,9 @@ func TestConversationTruncationKeepsNewestContent(t *testing.T) {
 	require.Len(t, output.Messages, 2)
 	assert.Equal(t, "aa", output.Messages[0].Text)
 	assert.Equal(t, strings.Repeat("b", 10), output.Messages[1].Text)
+
+	output = truncateMessages([]cursorapi.Message{{Type: "new", Text: "Aé日"}}, 4)
+	require.Len(t, output.Messages, 1)
+	assert.Equal(t, "日", output.Messages[0].Text)
+	assert.True(t, utf8.ValidString(output.Messages[0].Text))
 }

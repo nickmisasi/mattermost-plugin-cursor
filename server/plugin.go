@@ -80,3 +80,15 @@ func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Req
 func (p *Plugin) cursorClient(apiKey string) *cursorapi.Client {
 	return cursorapi.NewClient(p.getConfiguration().CursorAPIBaseURL, apiKey, p.httpClient)
 }
+
+func (p *Plugin) logError(message string, err error) {
+	if p.client != nil {
+		p.client.Log.Error(message, "error", err.Error())
+	}
+}
+
+func (p *Plugin) logDebug(message string, keyValuePairs ...any) {
+	if p.client != nil {
+		p.client.Log.Debug(message, keyValuePairs...)
+	}
+}

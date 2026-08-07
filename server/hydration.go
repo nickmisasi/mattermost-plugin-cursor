@@ -145,6 +145,9 @@ func (p *Plugin) hydrateAgents(
 	includeRun bool,
 ) []cursorapi.HydratedAgent {
 	hydrated := make([]cursorapi.HydratedAgent, len(agents))
+	for index, agent := range agents {
+		hydrated[index] = cursorapi.HydratedAgent{AgentSummary: agent}
+	}
 	jobs := make(chan int)
 	workers := min(hydrationConcurrency, len(agents))
 	var waitGroup sync.WaitGroup
@@ -153,12 +156,17 @@ func (p *Plugin) hydrateAgents(
 		go func() {
 			defer waitGroup.Done()
 			for index := range jobs {
-				hydrated[index], _, _ = p.hydrateAgent(ctx, userID, client, agents[index], includeRun)
+				hydrated[index], _ = p.hydrateAgent(ctx, userID, client, agents[index], includeRun)
 			}
 		}()
 	}
+dispatch:
 	for index := range agents {
-		jobs <- index
+		select {
+		case jobs <- index:
+		case <-ctx.Done():
+			break dispatch
+		}
 	}
 	close(jobs)
 	waitGroup.Wait()
@@ -171,15 +179,16 @@ func (p *Plugin) hydrateAgent(
 	client *cursorapi.Client,
 	summary cursorapi.AgentSummary,
 	includeRun bool,
-) (cursorapi.HydratedAgent, cursorapi.Run, bool) {
+) (cursorapi.HydratedAgent, bool) {
 	hydrated := cursorapi.HydratedAgent{AgentSummary: summary}
 	agent, ok := p.hydration.getAgent(userID, summary.ID)
 	if !ok {
 		response, err := client.GetAgent(ctx, summary.ID)
-		if err == nil {
-			agent, err = cursorapi.Decode[cursorapi.Agent](response)
-		}
-		if err == nil {
+		if err != nil {
+			p.logDebug("Failed to fetch agent during hydration", "agent_id", summary.ID, "error", err.Error())
+		} else if agent, err = cursorapi.Decode[cursorapi.Agent](response); err != nil {
+			p.logDebug("Failed to decode agent during hydration", "agent_id", summary.ID, "error", err.Error())
+		} else {
 			p.hydration.putAgent(userID, agent)
 			ok = true
 		}
@@ -188,17 +197,30 @@ func (p *Plugin) hydrateAgent(
 		hydrated.Repos = agent.Repos
 	}
 	if !includeRun || summary.LatestRunID == "" {
-		return hydrated, cursorapi.Run{}, false
+		return hydrated, false
 	}
 
 	run, ok := p.hydration.getRun(userID, summary)
 	if !ok {
 		response, err := client.GetRun(ctx, summary.ID, summary.LatestRunID)
-		if err == nil {
-			run, err = cursorapi.Decode[cursorapi.Run](response)
-		}
 		if err != nil {
-			return hydrated, cursorapi.Run{}, false
+			p.logDebug(
+				"Failed to fetch run during hydration",
+				"agent_id", summary.ID,
+				"run_id", summary.LatestRunID,
+				"error", err.Error(),
+			)
+			return hydrated, false
+		}
+		run, err = cursorapi.Decode[cursorapi.Run](response)
+		if err != nil {
+			p.logDebug(
+				"Failed to decode run during hydration",
+				"agent_id", summary.ID,
+				"run_id", summary.LatestRunID,
+				"error", err.Error(),
+			)
+			return hydrated, false
 		}
 		p.hydration.putRun(userID, summary, run)
 	}
@@ -207,5 +229,6 @@ func (p *Plugin) hydrateAgent(
 		hydrated.PRURL = run.Git.Branches[0].PRURL
 	}
 	hydrated.RunStatus = run.Status
-	return hydrated, run, true
+	hydrated.Result = run.Result
+	return hydrated, true
 }
