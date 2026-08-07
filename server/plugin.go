@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -23,14 +22,13 @@ type Plugin struct {
 	plugin.MattermostPlugin
 	configurationState
 
-	client       *pluginapi.Client
-	router       *mux.Router
-	mcpServer    *pluginmcp.Server
-	keyStore     *KeyStore
-	httpClient   *http.Client
-	cache        responseCache
-	hydration    hydrationCache
-	getMCPUserID func(context.Context) string
+	client     *pluginapi.Client
+	router     *mux.Router
+	mcpServer  *pluginmcp.Server
+	keyStore   *KeyStore
+	httpClient *http.Client
+	cache      responseCache
+	hydration  hydrationCache
 }
 
 func (p *Plugin) OnActivate() error {

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/mattermost/mattermost-plugin-agents/v2/external/pluginmcp"
@@ -16,7 +18,10 @@ import (
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursorapi"
 )
 
-const conversationCharacterBudget = 20_000
+const (
+	conversationCharacterBudget = 20_000
+	serviceAccountCachePrefix   = "service-account:"
+)
 
 type createAgentInput struct {
 	Prompt       string `json:"prompt" jsonschema:"Task for the autonomous Cursor Cloud agent,minLength=1"`
@@ -92,9 +97,6 @@ func (p *Plugin) initMCPServer() {
 	if manifest != nil && manifest.Version != "" {
 		version = manifest.Version
 	}
-	if p.getMCPUserID == nil {
-		p.getMCPUserID = pluginmcp.GetUserID
-	}
 	p.mcpServer = pluginmcp.NewServer(p.API, pluginmcp.Config{
 		PluginID:       pluginID,
 		Name:           "Cursor Cloud Agents",
@@ -113,7 +115,7 @@ func (p *Plugin) initMCPServer() {
 	}, p.mcpGetAgent)
 	pluginmcp.AddTool(p.mcpServer, &mcp.Tool{
 		Name:        "list_agents",
-		Description: "List the acting user's recent Cursor Cloud agents.",
+		Description: "List recent Cursor Cloud agents available to the configured service account.",
 	}, p.mcpListAgents)
 	pluginmcp.AddTool(p.mcpServer, &mcp.Tool{
 		Name: "add_followup",
@@ -131,7 +133,7 @@ func (p *Plugin) mcpCreateAgent(
 	_ *mcp.CallToolRequest,
 	input createAgentInput,
 ) (*mcp.CallToolResult, createAgentOutput, error) {
-	client, _, failure := p.mcpClient(ctx)
+	client, _, failure := p.mcpClient()
 	if failure != nil {
 		return failure, createAgentOutput{}, nil
 	}
@@ -163,7 +165,7 @@ func (p *Plugin) mcpGetAgent(
 	_ *mcp.CallToolRequest,
 	input getAgentInput,
 ) (*mcp.CallToolResult, getAgentOutput, error) {
-	client, userID, failure := p.mcpClient(ctx)
+	client, cacheIdentity, failure := p.mcpClient()
 	if failure != nil {
 		return failure, getAgentOutput{}, nil
 	}
@@ -175,7 +177,7 @@ func (p *Plugin) mcpGetAgent(
 	if err != nil {
 		return cursorToolError(response, err), getAgentOutput{}, nil
 	}
-	p.hydration.putAgent(userID, agent)
+	p.hydration.putAgent(cacheIdentity, agent)
 	output := getAgentOutput{
 		AgentID: agent.ID,
 		Name:    agent.Name,
@@ -185,7 +187,7 @@ func (p *Plugin) mcpGetAgent(
 	if agent.LatestRunID == "" {
 		return nil, output, nil
 	}
-	hydrated, ok := p.hydrateAgent(ctx, userID, client, agent.AgentSummary, true)
+	hydrated, ok := p.hydrateAgent(ctx, cacheIdentity, client, agent.AgentSummary, true)
 	if ok {
 		output.Status = hydrated.RunStatus
 		output.Summary = hydrated.Result
@@ -200,7 +202,7 @@ func (p *Plugin) mcpListAgents(
 	_ *mcp.CallToolRequest,
 	input listAgentsInput,
 ) (*mcp.CallToolResult, listAgentsOutput, error) {
-	client, userID, failure := p.mcpClient(ctx)
+	client, cacheIdentity, failure := p.mcpClient()
 	if failure != nil {
 		return failure, listAgentsOutput{}, nil
 	}
@@ -216,7 +218,7 @@ func (p *Plugin) mcpListAgents(
 	if err != nil {
 		return cursorToolError(response, err), listAgentsOutput{}, nil
 	}
-	hydrated := p.hydrateAgents(ctx, userID, client, list.Items, false)
+	hydrated := p.hydrateAgents(ctx, cacheIdentity, client, list.Items, false)
 	output := listAgentsOutput{Agents: make([]listedAgent, 0, len(hydrated))}
 	for _, agent := range hydrated {
 		repository := ""
@@ -239,7 +241,7 @@ func (p *Plugin) mcpAddFollowup(
 	_ *mcp.CallToolRequest,
 	input addFollowupInput,
 ) (*mcp.CallToolResult, addFollowupOutput, error) {
-	client, _, failure := p.mcpClient(ctx)
+	client, _, failure := p.mcpClient()
 	if failure != nil {
 		return failure, addFollowupOutput{}, nil
 	}
@@ -261,7 +263,7 @@ func (p *Plugin) mcpGetAgentConversation(
 	_ *mcp.CallToolRequest,
 	input getAgentConversationInput,
 ) (*mcp.CallToolResult, getAgentConversationOutput, error) {
-	client, _, failure := p.mcpClient(ctx)
+	client, _, failure := p.mcpClient()
 	if failure != nil {
 		return failure, getAgentConversationOutput{}, nil
 	}
@@ -277,21 +279,18 @@ func (p *Plugin) mcpGetAgentConversation(
 	return nil, output, nil
 }
 
-func (p *Plugin) mcpClient(ctx context.Context) (*cursorapi.Client, string, *mcp.CallToolResult) {
-	userID := p.getMCPUserID(ctx)
-	if userID == "" {
-		return nil, "", toolError("No acting Mattermost user was provided")
-	}
-	apiKey, _, err := p.keyStore.Get(userID)
-	if errors.Is(err, errAPIKeyNotFound) {
+func (p *Plugin) mcpClient() (*cursorapi.Client, string, *mcp.CallToolResult) {
+	config := p.getConfiguration()
+	apiKey := strings.TrimSpace(config.ServiceAccountAPIKey)
+	if apiKey == "" {
 		return nil, "", toolError(
-			"Ask the user to configure their Cursor API key in the Cursor plugin panel in Mattermost",
+			"A Mattermost administrator must configure the Cursor Service Account API Key " +
+				"in the System Console before Cursor tools can be used.",
 		)
 	}
-	if err != nil {
-		return nil, "", toolError("Failed to load the user's Cursor API key")
-	}
-	return p.cursorClient(apiKey), userID, nil
+	fingerprint := sha256.Sum256([]byte(apiKey))
+	cacheIdentity := fmt.Sprintf("%s%x", serviceAccountCachePrefix, fingerprint[:8])
+	return cursorapi.NewClient(config.CursorAPIBaseURL, apiKey, p.httpClient), cacheIdentity, nil
 }
 
 func truncateMessages(messages []cursorapi.Message, budget int) getAgentConversationOutput {

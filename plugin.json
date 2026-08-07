@@ -19,9 +19,17 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "Each user connects their own Cursor API key from Cursor Dashboard → Integrations in the Cursor plugin panel.",
+        "header": "Personal Cursor API keys power each user's right-hand panel. The service account key below powers MCP tools for the Mattermost Agents plugin.",
         "footer": "",
         "settings": [
+            {
+                "key": "ServiceAccountAPIKey",
+                "display_name": "Service Account API Key",
+                "type": "text",
+                "help_text": "Used for all MCP tool calls made through the Mattermost Agents plugin, so invoking users do not need their own Cursor access. Create a service account key from the Cursor Dashboard.",
+                "default": "",
+                "secret": true
+            },
             {
                 "key": "CursorAPIBaseURL",
                 "display_name": "Cursor API Base URL",

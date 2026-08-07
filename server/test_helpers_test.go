@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testUserID = "user-1"
+const (
+	testUserID               = "user-1"
+	testServiceAccountAPIKey = "service-account-key"
+)
 
 type memoryKV struct {
 	mu     sync.Mutex
@@ -70,11 +72,13 @@ func newTestPlugin(t *testing.T, upstream http.Handler) (*Plugin, *memoryKV) {
 		keyStore:   keyStore,
 		httpClient: server.Client(),
 	}
-	p.setConfiguration(&configuration{CursorAPIBaseURL: server.URL})
+	p.setConfiguration(&configuration{
+		CursorAPIBaseURL:     server.URL,
+		ServiceAccountAPIKey: testServiceAccountAPIKey,
+	})
 	p.cache.initialize(5 * time.Minute)
 	p.hydration.initialize(hydrationCacheCapacity)
 	p.initRouter()
-	p.getMCPUserID = func(_ context.Context) string { return testUserID }
 	return p, kv
 }
 

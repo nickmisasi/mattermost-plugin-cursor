@@ -17,6 +17,7 @@ import (
 
 func TestMCPToolHandlersHappyPath(t *testing.T) {
 	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer "+testServiceAccountAPIKey, r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents":
@@ -64,7 +65,6 @@ func TestMCPToolHandlersHappyPath(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	require.NoError(t, p.keyStore.Set(testUserID, "key", ""))
 	ctx := context.Background()
 
 	tests := []struct {
@@ -160,8 +160,11 @@ func TestMCPToolHandlersHappyPath(t *testing.T) {
 
 func TestMCPToolHandlersMissingKey(t *testing.T) {
 	p, _ := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("upstream should not be called without an API key")
+		t.Fatal("upstream should not be called without the service account API key")
 	}))
+	config := *p.getConfiguration()
+	config.ServiceAccountAPIKey = ""
+	p.setConfiguration(&config)
 	ctx := context.Background()
 
 	tests := []struct {
@@ -215,10 +218,34 @@ func TestMCPToolHandlersMissingKey(t *testing.T) {
 			assert.Contains(
 				t,
 				text.Text,
-				"Ask the user to configure their Cursor API key in the Cursor plugin panel in Mattermost",
+				"A Mattermost administrator must configure the Cursor Service Account API Key",
 			)
 		})
 	}
+}
+
+func TestMCPUsesRotatedServiceAccountKey(t *testing.T) {
+	const rotatedKey = "rotated-service-account-key"
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer "+rotatedKey, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"items":[]}`)
+	}))
+
+	_, initialIdentity, failure := p.mcpClient()
+	require.Nil(t, failure)
+	config := *p.getConfiguration()
+	config.ServiceAccountAPIKey = rotatedKey
+	p.setConfiguration(&config)
+
+	_, rotatedIdentity, failure := p.mcpClient()
+	require.Nil(t, failure)
+	assert.NotEqual(t, initialIdentity, rotatedIdentity)
+
+	result, output, err := p.mcpListAgents(context.Background(), nil, listAgentsInput{})
+	require.NoError(t, err)
+	assert.Nil(t, result)
+	assert.Empty(t, output.Agents)
 }
 
 func TestMCPGetAgentFallsBackToAgentStatus(t *testing.T) {
@@ -232,7 +259,6 @@ func TestMCPGetAgentFallsBackToAgentStatus(t *testing.T) {
 			"repos":[],"workOnCurrentBranch":false,"autoCreatePR":false
 		}`)
 	}))
-	require.NoError(t, p.keyStore.Set(testUserID, "key", ""))
 
 	result, output, err := p.mcpGetAgent(
 		context.Background(),

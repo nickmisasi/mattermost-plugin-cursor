@@ -6,7 +6,8 @@ import (
 )
 
 type configuration struct {
-	CursorAPIBaseURL string
+	CursorAPIBaseURL     string
+	ServiceAccountAPIKey string
 }
 
 func (p *Plugin) OnConfigurationChange() error {
