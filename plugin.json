@@ -1,11 +1,11 @@
 {
     "id": "com.mattermost.plugin-cursor",
-    "name": "Cursor Background Agents",
-    "description": "Launch, manage, and interact with Cursor Background Agents directly from Mattermost.",
+    "name": "Cursor Cloud Agents",
+    "description": "Manage Cursor Cloud Agents from Mattermost and expose Cursor tools to the Agents plugin via MCP.",
     "homepage_url": "https://github.com/mattermost/mattermost-plugin-cursor",
     "support_url": "https://github.com/mattermost/mattermost-plugin-cursor/issues",
     "icon_path": "assets/cursor-icon.png",
-    "min_server_version": "9.6.0",
+    "min_server_version": "11.3.0",
     "server": {
         "executables": {
             "linux-amd64": "server/dist/plugin-linux-amd64",
@@ -19,135 +19,16 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "Configure the Cursor Background Agents plugin. You need a Cursor API key from [cursor.com/dashboard](https://cursor.com/dashboard) under Integrations.",
-        "footer": "For troubleshooting, check the health endpoint at /plugins/com.mattermost.plugin-cursor/api/v1/admin/health. [Report issues](https://github.com/mattermost/mattermost-plugin-cursor/issues).",
+        "header": "Each user connects their own Cursor API key from Cursor Dashboard → Integrations in the Cursor plugin panel.",
+        "footer": "",
         "settings": [
             {
-                "key": "CursorAPIKey",
-                "display_name": "Cursor API Key",
+                "key": "CursorAPIBaseURL",
+                "display_name": "Cursor API Base URL",
                 "type": "text",
-                "help_text": "API key from your Cursor dashboard (Dashboard -> Integrations). Required for the plugin to function.",
-                "placeholder": "cur_...",
-                "secret": true
-            },
-            {
-                "key": "DefaultRepository",
-                "display_name": "Default Repository",
-                "type": "text",
-                "help_text": "Default GitHub repository in owner/repo format. Users can override per-channel or per-message.",
-                "placeholder": "mattermost/mattermost"
-            },
-            {
-                "key": "DefaultBranch",
-                "display_name": "Default Branch",
-                "type": "text",
-                "help_text": "Default base branch for new agents. Users can override per-message with branch=name.",
-                "default": "main",
-                "placeholder": "main"
-            },
-            {
-                "key": "DefaultModel",
-                "display_name": "Default AI Model",
-                "type": "text",
-                "help_text": "Default model for background agents (e.g., auto, claude-sonnet, gpt-4o). Users can override with 'with model' or model=name.",
-                "default": "auto",
-                "placeholder": "auto"
-            },
-            {
-                "key": "AutoCreatePR",
-                "display_name": "Auto-Create Pull Requests",
-                "type": "bool",
-                "help_text": "When enabled, agents automatically create pull requests on completion. Users can override per-message with autopr=false.",
-                "default": true
-            },
-            {
-                "key": "PollIntervalSeconds",
-                "display_name": "Status Poll Interval (seconds)",
-                "type": "number",
-                "help_text": "How often the plugin checks for agent status changes. Minimum 10 seconds. Lower values increase API usage.",
-                "default": 30,
-                "placeholder": "30"
-            },
-            {
-                "key": "GitHubWebhookSecret",
-                "display_name": "GitHub Webhook Secret",
-                "type": "text",
-                "help_text": "Secret for verifying GitHub webhook signatures (used for PR lifecycle notifications). Leave blank to disable webhook verification.",
-                "placeholder": "your-webhook-secret",
-                "secret": true
-            },
-            {
-                "key": "CursorAgentSystemPrompt",
-                "display_name": "Cursor Agent System Prompt",
-                "type": "longtext",
-                "help_text": "Instructions prepended to every Cursor agent prompt. Tells the agent how to approach development. Leave blank to use the built-in default.",
-                "default": ""
-            },
-            {
-                "key": "EnableContextReview",
-                "display_name": "Enable Context Review (HITL)",
-                "type": "bool",
-                "help_text": "When enabled, the bot posts enriched context for user review before launching an agent. Users can approve, reject, or iterate on the context. Disable to skip this step and launch agents immediately.",
-                "default": true
-            },
-            {
-                "key": "EnablePlanLoop",
-                "display_name": "Enable Plan Loop (HITL)",
-                "type": "bool",
-                "help_text": "When enabled, a planning-only agent analyzes the codebase and produces an implementation plan for user review before the implementation agent is launched. Users can iterate on the plan. Disable to skip planning and go straight to implementation.",
-                "default": true
-            },
-            {
-                "key": "PlannerSystemPrompt",
-                "display_name": "Planner Agent System Prompt",
-                "type": "longtext",
-                "help_text": "Instructions for the planning-only agent that analyzes the codebase and produces an implementation plan. Leave blank to use the built-in default. The planner agent is instructed not to modify any code.",
-                "default": ""
-            },
-            {
-                "key": "GitHubPAT",
-                "display_name": "GitHub Personal Access Token",
-                "type": "text",
-                "help_text": "Fine-grained PAT with pull_requests:write scope. Required for the AI review loop to request reviewers and read PR review feedback.",
-                "placeholder": "github_pat_...",
-                "secret": true
-            },
-            {
-                "key": "EnableAIReviewLoop",
-                "display_name": "Enable AI Review Loop",
-                "type": "bool",
-                "help_text": "When enabled, completed agents with PRs automatically get AI reviews (CodeRabbit + Copilot). Actionable feedback is sent to Cursor using direct follow-up dispatch for fixes. Requires both Cursor API Key and GitHub PAT.",
-                "default": false
-            },
-            {
-                "key": "MaxReviewIterations",
-                "display_name": "Max Review Iterations",
-                "type": "number",
-                "help_text": "Maximum number of AI review fix-and-re-review cycles before requiring manual intervention. Range: 1-20.",
-                "default": 5,
-                "placeholder": "5"
-            },
-            {
-                "key": "AIReviewerBots",
-                "display_name": "AI Reviewer Bot Usernames",
-                "type": "text",
-                "help_text": "Comma-separated GitHub usernames of AI reviewer bots to request as reviewers on PRs.",
+                "help_text": "Override for testing. Leave empty to use https://api.cursor.com.",
                 "default": "",
-                "placeholder": "coderabbitai[bot],copilot-pull-request-reviewer"
-            },
-            {
-                "key": "HumanReviewTeam",
-                "display_name": "Human Review Team",
-                "type": "text",
-                "help_text": "GitHub team slug to assign as human reviewers after AI approval (e.g., core-developers). Leave blank to skip human review assignment.",
-                "placeholder": "core-developers"
-            },
-            {
-                "key": "EnableDebugLogging",
-                "display_name": "Enable Debug Logging",
-                "type": "bool",
-                "help_text": "When enabled, the plugin logs detailed debug information including API request/response bodies. Disable in production to reduce log noise.",
-                "default": false
+                "placeholder": "https://api.cursor.com"
             }
         ]
     }
