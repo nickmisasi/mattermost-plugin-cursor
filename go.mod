@@ -3,6 +3,7 @@ module github.com/mattermost/mattermost-plugin-cursor
 go 1.26.4
 
 require (
+	github.com/gorilla/mux v1.8.1
 	github.com/mattermost/mattermost-plugin-agents/v2 v2.5.1
 	github.com/mattermost/mattermost/server/public v0.3.1-0.20260402155910-d9d71af83e3f
 	github.com/modelcontextprotocol/go-sdk v1.4.1

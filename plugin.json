@@ -1,7 +1,7 @@
 {
     "id": "com.mattermost.plugin-cursor",
     "name": "Cursor Cloud Agents",
-    "description": "Expose Cursor Cloud Agents tools to the Mattermost Agents plugin via MCP.",
+    "description": "Manage Cursor Cloud Agents from Mattermost and expose Cursor tools to the Agents plugin via MCP.",
     "homepage_url": "https://github.com/mattermost/mattermost-plugin-cursor",
     "support_url": "https://github.com/mattermost/mattermost-plugin-cursor/issues",
     "icon_path": "assets/cursor-icon.png",
@@ -15,8 +15,11 @@
             "windows-amd64": "server/dist/plugin-windows-amd64.exe"
         }
     },
+    "webapp": {
+        "bundle_path": "webapp/dist/main.js"
+    },
     "settings_schema": {
-        "header": "The service account key below powers MCP tools for the Mattermost Agents plugin.",
+        "header": "Personal Cursor API keys power each user's right-hand panel. The service account key below powers MCP tools for the Mattermost Agents plugin.",
         "footer": "",
         "settings": [
             {

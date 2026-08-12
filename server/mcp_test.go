@@ -16,7 +16,7 @@ import (
 )
 
 func TestMCPToolHandlersHappyPath(t *testing.T) {
-	p := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer "+testServiceAccountAPIKey, r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -159,7 +159,7 @@ func TestMCPToolHandlersHappyPath(t *testing.T) {
 }
 
 func TestMCPToolHandlersMissingKey(t *testing.T) {
-	p := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("upstream should not be called without the service account API key")
 	}))
 	config := *p.getConfiguration()
@@ -226,7 +226,7 @@ func TestMCPToolHandlersMissingKey(t *testing.T) {
 
 func TestMCPUsesRotatedServiceAccountKey(t *testing.T) {
 	const rotatedKey = "rotated-service-account-key"
-	p := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer "+rotatedKey, r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"items":[]}`)
@@ -249,7 +249,7 @@ func TestMCPUsesRotatedServiceAccountKey(t *testing.T) {
 }
 
 func TestMCPGetAgentFallsBackToAgentStatus(t *testing.T) {
-	p := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	p, _ := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/agents/bc-idle", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
