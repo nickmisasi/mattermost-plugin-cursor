@@ -74,12 +74,12 @@ func getClient(ctx context.Context) (*model.Client4, error) {
 
 	client, connected := getUnixClient(socketPath)
 	if connected {
-		log.Printf("Connecting using local mode over %s", socketPath)
+		log.Printf("Connecting using local mode over %s", socketPath) //nolint:gosec // Value comes from the local deployment environment.
 		return client, nil
 	}
 
 	if os.Getenv("MM_LOCALSOCKETPATH") != "" {
-		log.Printf("No socket found at %s for local mode deployment. Attempting to authenticate with credentials.", socketPath)
+		log.Printf("No socket found at %s for local mode deployment. Attempting to authenticate with credentials.", socketPath) //nolint:gosec // Value comes from the local deployment environment.
 	}
 
 	siteURL := os.Getenv("MM_SERVICESETTINGS_SITEURL")
@@ -94,14 +94,14 @@ func getClient(ctx context.Context) (*model.Client4, error) {
 	client = model.NewAPIv4Client(siteURL)
 
 	if adminToken != "" {
-		log.Printf("Authenticating using token against %s.", siteURL)
+		log.Printf("Authenticating using token against %s.", siteURL) //nolint:gosec // Value comes from the local deployment environment.
 		client.SetToken(adminToken)
 		return client, nil
 	}
 
 	if adminUsername != "" && adminPassword != "" {
 		client := model.NewAPIv4Client(siteURL)
-		log.Printf("Authenticating as %s against %s.", adminUsername, siteURL)
+		log.Printf("Authenticating as %s against %s.", adminUsername, siteURL) //nolint:gosec // Values come from the local deployment environment.
 		_, _, err := client.Login(ctx, adminUsername, adminPassword)
 		if err != nil {
 			return nil, fmt.Errorf("failed to login as %s: %w", adminUsername, err)
@@ -114,7 +114,7 @@ func getClient(ctx context.Context) (*model.Client4, error) {
 }
 
 func getUnixClient(socketPath string) (*model.Client4, bool) {
-	_, err := net.Dial("unix", socketPath)
+	_, err := net.Dial("unix", socketPath) //nolint:gosec // Connecting to an operator-configured local socket is intentional.
 	if err != nil {
 		return nil, false
 	}
