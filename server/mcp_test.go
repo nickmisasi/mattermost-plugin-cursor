@@ -2,18 +2,83 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursorapi"
 )
+
+func TestServeHTTPRejectsGuestsOnMCP(t *testing.T) {
+	p := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("upstream should not be called")
+	}))
+	defaultLookup := p.lookupUser
+
+	tests := []struct {
+		name       string
+		userID     string
+		lookup     func(string) (*model.User, error)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:   "guest",
+			userID: "guest-1",
+			lookup: func(userID string) (*model.User, error) {
+				return &model.User{Id: userID, Roles: model.SystemGuestRoleId}, nil
+			},
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
+		},
+		{
+			name:   "lookup error",
+			userID: "user-1",
+			lookup: func(string) (*model.User, error) {
+				return nil, errors.New("lookup failed")
+			},
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
+		},
+		{
+			name:       "missing user",
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
+		},
+		{
+			name:       "regular user reaches MCP server",
+			userID:     "user-1",
+			wantStatus: http.StatusServiceUnavailable,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.lookup != nil {
+				p.lookupUser = test.lookup
+				t.Cleanup(func() { p.lookupUser = defaultLookup })
+			}
+			request := httptest.NewRequest(http.MethodPost, mcpBasePath, nil)
+			if test.userID != "" {
+				request.Header.Set("X-Mattermost-UserID", test.userID)
+			}
+			recorder := httptest.NewRecorder()
+			p.ServeHTTP(nil, recorder, request)
+			assert.Equal(t, test.wantStatus, recorder.Code)
+			if test.wantBody != "" {
+				assert.JSONEq(t, test.wantBody, recorder.Body.String())
+			}
+		})
+	}
+}
 
 func TestMCPToolHandlersHappyPath(t *testing.T) {
 	p := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

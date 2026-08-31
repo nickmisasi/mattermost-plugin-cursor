@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/mattermost/mattermost-plugin-agents/v2/external/pluginmcp"
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 
@@ -12,8 +15,9 @@ import (
 )
 
 const (
-	pluginID    = "com.mattermost.plugin-cursor"
-	mcpBasePath = "/mcp"
+	pluginID           = "com.mattermost.plugin-cursor"
+	mcpBasePath        = "/mcp"
+	guestDeniedMessage = "Guests cannot use Cursor Cloud Agents"
 )
 
 type Plugin struct {
@@ -24,6 +28,7 @@ type Plugin struct {
 	mcpServer  *pluginmcp.Server
 	httpClient *http.Client
 	hydration  hydrationCache
+	lookupUser func(userID string) (*model.User, error)
 }
 
 func (p *Plugin) OnActivate() error {
@@ -49,6 +54,11 @@ func (p *Plugin) OnDeactivate() error {
 
 func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == mcpBasePath || strings.HasPrefix(r.URL.Path, mcpBasePath+"/") {
+		userID := r.Header.Get("X-Mattermost-UserID")
+		if userID == "" || p.isGuestUserID(userID) {
+			writeError(w, http.StatusForbidden, guestDeniedMessage)
+			return
+		}
 		if p.mcpServer == nil {
 			http.Error(w, "MCP server is not initialized", http.StatusServiceUnavailable)
 			return
@@ -73,4 +83,36 @@ func (p *Plugin) logDebug(message string, keyValuePairs ...any) {
 	if p.client != nil {
 		p.client.Log.Debug(message, keyValuePairs...)
 	}
+}
+
+func (p *Plugin) getUser(userID string) (*model.User, error) {
+	if p.lookupUser != nil {
+		return p.lookupUser(userID)
+	}
+	if p.API == nil {
+		return nil, errors.New("user lookup is unavailable")
+	}
+	user, appErr := p.API.GetUser(userID)
+	if appErr != nil {
+		return nil, appErr
+	}
+	return user, nil
+}
+
+func (p *Plugin) isGuestUserID(userID string) bool {
+	user, err := p.getUser(userID)
+	if err != nil {
+		p.logError("Failed to look up user for guest check", err)
+		return true
+	}
+	if user == nil {
+		return true
+	}
+	return user.IsGuest()
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
