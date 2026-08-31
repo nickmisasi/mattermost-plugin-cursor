@@ -3,28 +3,65 @@ export interface TextSegment {
     content: string;
 }
 
-const FENCE = /```[^\n`]*\n?([\s\S]*?)```/g;
+function isFenceOpener(line: string): boolean {
+    return line.trimStart().startsWith('```');
+}
+
+function isFenceCloser(line: string): boolean {
+    return line.trim() === '```';
+}
 
 /**
  * Splits assistant text into plain and fenced-code segments so code can be
  * rendered in a monospace block. Everything else is left verbatim.
+ *
+ * Line-based and linear in the input length so an unterminated fence cannot
+ * trigger catastrophic backtracking the way a /```[\s\S]*?```/ regex would.
  */
 export function parseSegments(text: string): TextSegment[] {
     const segments: TextSegment[] = [];
-    const pattern = new RegExp(FENCE);
-    let lastIndex = 0;
+    const lines = text.split('\n');
+    const textLines: string[] = [];
+    let i = 0;
 
-    for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-        if (match.index > lastIndex) {
-            segments.push({type: 'text', content: text.slice(lastIndex, match.index)});
+    const flushText = () => {
+        if (textLines.length === 0) {
+            return;
         }
-        segments.push({type: 'code', content: match[1]});
-        lastIndex = pattern.lastIndex;
+        segments.push({type: 'text', content: textLines.join('\n')});
+        textLines.length = 0;
+    };
+
+    while (i < lines.length) {
+        if (!isFenceOpener(lines[i])) {
+            textLines.push(lines[i]);
+            i += 1;
+            continue;
+        }
+
+        let close = -1;
+        for (let j = i + 1; j < lines.length; j++) {
+            if (isFenceCloser(lines[j])) {
+                close = j;
+                break;
+            }
+        }
+
+        if (close === -1) {
+            // Unterminated fence: remainder is plain text. Do not rescan.
+            while (i < lines.length) {
+                textLines.push(lines[i]);
+                i += 1;
+            }
+            break;
+        }
+
+        flushText();
+        const body = lines.slice(i + 1, close).join('\n');
+        segments.push({type: 'code', content: close > i + 1 ? `${body}\n` : ''});
+        i = close + 1;
     }
 
-    if (lastIndex < text.length) {
-        segments.push({type: 'text', content: text.slice(lastIndex)});
-    }
-
+    flushText();
     return segments.filter((segment) => segment.content.trim() !== '');
 }
