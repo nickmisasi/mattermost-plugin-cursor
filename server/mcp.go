@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mattermost/mattermost-plugin-agents/v2/external/pluginmcp"
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/mattermost/mattermost-plugin-cursor/server/cursorapi"
@@ -133,8 +134,22 @@ func (p *Plugin) mcpCreateAgent(
 	_ *mcp.CallToolRequest,
 	input createAgentInput,
 ) (*mcp.CallToolResult, createAgentOutput, error) {
+	rec, failure := p.beginMCPAudit(ctx, auditEventMCPCreateAgent, "create_agent")
+	defer p.finishMCPAudit(rec)
+	if failure != nil {
+		return failure, createAgentOutput{}, nil
+	}
+	model.AddEventParameterToAuditRec(rec, "repository", input.Repository)
+	if input.Ref != "" {
+		model.AddEventParameterToAuditRec(rec, "ref", input.Ref)
+	}
+	if input.Model != "" {
+		model.AddEventParameterToAuditRec(rec, "model", input.Model)
+	}
+
 	client, _, failure := p.mcpClient()
 	if failure != nil {
+		rec.AddErrorDesc("service account API key is not configured")
 		return failure, createAgentOutput{}, nil
 	}
 	request := cursorapi.NewCreateAgentRequest(
@@ -146,12 +161,16 @@ func (p *Plugin) mcpCreateAgent(
 	)
 	response, err := client.CreateAgent(ctx, request)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return toolError(err.Error()), createAgentOutput{}, nil
 	}
 	created, err := cursorapi.Decode[cursorapi.CreateAgentResponse](response)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return cursorToolError(response, err), createAgentOutput{}, nil
 	}
+	model.AddEventParameterToAuditRec(rec, "agent_id", created.Agent.ID)
+	rec.Success()
 	return nil, createAgentOutput{
 		AgentID: created.Agent.ID,
 		Name:    created.Agent.Name,
@@ -165,16 +184,26 @@ func (p *Plugin) mcpGetAgent(
 	_ *mcp.CallToolRequest,
 	input getAgentInput,
 ) (*mcp.CallToolResult, getAgentOutput, error) {
+	rec, failure := p.beginMCPAudit(ctx, auditEventMCPGetAgent, "get_agent")
+	defer p.finishMCPAudit(rec)
+	if failure != nil {
+		return failure, getAgentOutput{}, nil
+	}
+	model.AddEventParameterToAuditRec(rec, "agent_id", input.AgentID)
+
 	client, cacheIdentity, failure := p.mcpClient()
 	if failure != nil {
+		rec.AddErrorDesc("service account API key is not configured")
 		return failure, getAgentOutput{}, nil
 	}
 	response, err := client.GetAgent(ctx, input.AgentID)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return toolError(err.Error()), getAgentOutput{}, nil
 	}
 	agent, err := cursorapi.Decode[cursorapi.Agent](response)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return cursorToolError(response, err), getAgentOutput{}, nil
 	}
 	p.hydration.putAgent(cacheIdentity, agent)
@@ -184,16 +213,16 @@ func (p *Plugin) mcpGetAgent(
 		Status:  agent.Status,
 		URL:     agent.URL,
 	}
-	if agent.LatestRunID == "" {
-		return nil, output, nil
+	if agent.LatestRunID != "" {
+		hydrated, ok := p.hydrateAgent(ctx, cacheIdentity, client, agent.AgentSummary, true)
+		if ok {
+			output.Status = hydrated.RunStatus
+			output.Summary = hydrated.Result
+		}
+		output.Branch = hydrated.Branch
+		output.PRURL = hydrated.PRURL
 	}
-	hydrated, ok := p.hydrateAgent(ctx, cacheIdentity, client, agent.AgentSummary, true)
-	if ok {
-		output.Status = hydrated.RunStatus
-		output.Summary = hydrated.Result
-	}
-	output.Branch = hydrated.Branch
-	output.PRURL = hydrated.PRURL
+	rec.Success()
 	return nil, output, nil
 }
 
@@ -202,8 +231,18 @@ func (p *Plugin) mcpListAgents(
 	_ *mcp.CallToolRequest,
 	input listAgentsInput,
 ) (*mcp.CallToolResult, listAgentsOutput, error) {
+	rec, failure := p.beginMCPAudit(ctx, auditEventMCPListAgents, "list_agents")
+	defer p.finishMCPAudit(rec)
+	if failure != nil {
+		return failure, listAgentsOutput{}, nil
+	}
+	if input.Limit != nil {
+		model.AddEventParameterToAuditRec(rec, "limit", *input.Limit)
+	}
+
 	client, cacheIdentity, failure := p.mcpClient()
 	if failure != nil {
+		rec.AddErrorDesc("service account API key is not configured")
 		return failure, listAgentsOutput{}, nil
 	}
 	query := make(url.Values)
@@ -212,10 +251,12 @@ func (p *Plugin) mcpListAgents(
 	}
 	response, err := client.ListAgents(ctx, query)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return toolError(err.Error()), listAgentsOutput{}, nil
 	}
 	list, err := cursorapi.Decode[cursorapi.ListAgentsResponse](response)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return cursorToolError(response, err), listAgentsOutput{}, nil
 	}
 	hydrated := p.hydrateAgents(ctx, cacheIdentity, client, list.Items, false)
@@ -233,6 +274,7 @@ func (p *Plugin) mcpListAgents(
 			CreatedAt:  agent.CreatedAt,
 		})
 	}
+	rec.Success()
 	return nil, output, nil
 }
 
@@ -241,20 +283,31 @@ func (p *Plugin) mcpAddFollowup(
 	_ *mcp.CallToolRequest,
 	input addFollowupInput,
 ) (*mcp.CallToolResult, addFollowupOutput, error) {
+	rec, failure := p.beginMCPAudit(ctx, auditEventMCPAddFollowup, "add_followup")
+	defer p.finishMCPAudit(rec)
+	if failure != nil {
+		return failure, addFollowupOutput{}, nil
+	}
+	model.AddEventParameterToAuditRec(rec, "agent_id", input.AgentID)
+
 	client, _, failure := p.mcpClient()
 	if failure != nil {
+		rec.AddErrorDesc("service account API key is not configured")
 		return failure, addFollowupOutput{}, nil
 	}
 	response, err := client.CreateRun(ctx, input.AgentID, cursorapi.CreateRunRequest{
 		Prompt: cursorapi.Prompt{Text: input.Prompt},
 	})
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return toolError(err.Error()), addFollowupOutput{}, nil
 	}
 	created, err := cursorapi.Decode[cursorapi.CreateRunResponse](response)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return cursorToolError(response, err), addFollowupOutput{}, nil
 	}
+	rec.Success()
 	return nil, addFollowupOutput{RunID: created.Run.ID, Status: created.Run.Status}, nil
 }
 
@@ -263,19 +316,30 @@ func (p *Plugin) mcpGetAgentConversation(
 	_ *mcp.CallToolRequest,
 	input getAgentConversationInput,
 ) (*mcp.CallToolResult, getAgentConversationOutput, error) {
+	rec, failure := p.beginMCPAudit(ctx, auditEventMCPGetAgentConversation, "get_agent_conversation")
+	defer p.finishMCPAudit(rec)
+	if failure != nil {
+		return failure, getAgentConversationOutput{}, nil
+	}
+	model.AddEventParameterToAuditRec(rec, "agent_id", input.AgentID)
+
 	client, _, failure := p.mcpClient()
 	if failure != nil {
+		rec.AddErrorDesc("service account API key is not configured")
 		return failure, getAgentConversationOutput{}, nil
 	}
 	response, err := client.GetConversation(ctx, input.AgentID)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return toolError(err.Error()), getAgentConversationOutput{}, nil
 	}
 	conversation, err := cursorapi.Decode[cursorapi.ConversationResponse](response)
 	if err != nil {
+		rec.AddErrorDesc(err.Error())
 		return cursorToolError(response, err), getAgentConversationOutput{}, nil
 	}
 	output := truncateMessages(conversation.Messages, conversationCharacterBudget)
+	rec.Success()
 	return nil, output, nil
 }
 

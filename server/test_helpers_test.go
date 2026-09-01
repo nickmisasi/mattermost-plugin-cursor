@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 const (
 	testServiceAccountAPIKey = "service-account-key"
+	testMCPUserID            = "test-user"
 )
 
 func newTestPlugin(t *testing.T, upstream http.Handler) *Plugin {
@@ -20,6 +22,9 @@ func newTestPlugin(t *testing.T, upstream http.Handler) *Plugin {
 		httpClient: server.Client(),
 		lookupUser: func(userID string) (*model.User, error) {
 			return &model.User{Id: userID, Roles: model.SystemUserRoleId}, nil
+		},
+		getMCPUserID: func(context.Context) string {
+			return testMCPUserID
 		},
 	}
 	p.setConfiguration(&configuration{

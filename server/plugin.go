@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -25,11 +26,13 @@ type Plugin struct {
 	plugin.MattermostPlugin
 	configurationState
 
-	client     *pluginapi.Client
-	mcpServer  *pluginmcp.Server
-	httpClient *http.Client
-	hydration  hydrationCache
-	lookupUser func(userID string) (*model.User, error)
+	client       *pluginapi.Client
+	mcpServer    *pluginmcp.Server
+	httpClient   *http.Client
+	hydration    hydrationCache
+	lookupUser   func(userID string) (*model.User, error)
+	getMCPUserID func(ctx context.Context) string
+	recordAudit  func(rec *model.AuditRecord)
 }
 
 func (p *Plugin) OnActivate() error {
@@ -78,6 +81,18 @@ func (p *Plugin) cursorClient(apiKey string) *cursorapi.Client {
 func (p *Plugin) logError(message string, err error) {
 	if p.client != nil {
 		p.client.Log.Error(message, "error", err.Error())
+	}
+}
+
+func (p *Plugin) logWarn(message string, keyValuePairs ...any) {
+	if p.client != nil {
+		p.client.Log.Warn(message, keyValuePairs...)
+	}
+}
+
+func (p *Plugin) logInfo(message string, keyValuePairs ...any) {
+	if p.client != nil {
+		p.client.Log.Info(message, keyValuePairs...)
 	}
 }
 
