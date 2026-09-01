@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -80,8 +81,9 @@ func TestServeHTTPRejectsGuestsOnMCP(t *testing.T) {
 	}
 }
 
-func TestMCPToolHandlersHappyPath(t *testing.T) {
-	p := newTestPlugin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func happyPathCursorAPI(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer "+testServiceAccountAPIKey, r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -129,7 +131,11 @@ func TestMCPToolHandlersHappyPath(t *testing.T) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	})
+}
+
+func TestMCPToolHandlersHappyPath(t *testing.T) {
+	p := newTestPlugin(t, happyPathCursorAPI(t))
 	ctx := context.Background()
 
 	tests := []struct {
@@ -324,6 +330,7 @@ func TestMCPGetAgentFallsBackToAgentStatus(t *testing.T) {
 			"repos":[],"workOnCurrentBranch":false,"autoCreatePR":false
 		}`)
 	}))
+	recs := attachAuditCapture(p)
 
 	result, output, err := p.mcpGetAgent(
 		context.Background(),
@@ -333,6 +340,8 @@ func TestMCPGetAgentFallsBackToAgentStatus(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, result)
 	assert.Equal(t, "ACTIVE", output.Status)
+	rec := requireAudit(t, recs, auditEventMCPGetAgent, "get_agent", model.AuditStatusSuccess)
+	assert.Equal(t, "bc-idle", rec.EventData.Parameters["agent_id"])
 }
 
 func TestConversationTruncationKeepsNewestContent(t *testing.T) {
@@ -350,4 +359,214 @@ func TestConversationTruncationKeepsNewestContent(t *testing.T) {
 	require.Len(t, output.Messages, 1)
 	assert.Equal(t, "日", output.Messages[0].Text)
 	assert.True(t, utf8.ValidString(output.Messages[0].Text))
+}
+
+func attachAuditCapture(p *Plugin) *[]*model.AuditRecord {
+	recs := make([]*model.AuditRecord, 0, 1)
+	p.recordAudit = func(rec *model.AuditRecord) {
+		if rec == nil {
+			return
+		}
+		cp := *rec
+		cp.EventData.Parameters = maps.Clone(rec.EventData.Parameters)
+		cp.Meta = maps.Clone(rec.Meta)
+		recs = append(recs, &cp)
+	}
+	return &recs
+}
+
+func requireAudit(t *testing.T, recs *[]*model.AuditRecord, event, tool, status string) *model.AuditRecord {
+	t.Helper()
+	require.Len(t, *recs, 1)
+	rec := (*recs)[0]
+	assert.Equal(t, event, rec.EventName)
+	assert.Equal(t, status, rec.Status)
+	assert.Equal(t, tool, rec.EventData.Parameters["tool"])
+	assert.Equal(t, auditMCPObjectType, rec.EventData.ObjectType)
+	for _, key := range []string{"prompt", "text", "messages", "api_key", "ServiceAccountAPIKey"} {
+		_, exists := rec.EventData.Parameters[key]
+		assert.False(t, exists, "audit must not include %s", key)
+	}
+	return rec
+}
+
+func TestMCPToolAuditLogs(t *testing.T) {
+	p := newTestPlugin(t, happyPathCursorAPI(t))
+	recs := attachAuditCapture(p)
+	ctx := context.Background()
+
+	t.Run("create_agent", func(t *testing.T) {
+		*recs = (*recs)[:0]
+		result, _, err := p.mcpCreateAgent(ctx, nil, createAgentInput{
+			Prompt:     "make a change with secrets",
+			Repository: "https://github.com/acme/repo",
+			Ref:        "main",
+			Model:      "composer-2",
+		})
+		require.NoError(t, err)
+		assert.Nil(t, result)
+		rec := requireAudit(t, recs, auditEventMCPCreateAgent, "create_agent", model.AuditStatusSuccess)
+		assert.Equal(t, testMCPUserID, rec.Actor.UserId)
+		assert.Equal(t, testMCPUserID, rec.EventData.Parameters["user_id"])
+		assert.Equal(t, "https://github.com/acme/repo", rec.EventData.Parameters["repository"])
+		assert.Equal(t, "main", rec.EventData.Parameters["ref"])
+		assert.Equal(t, "composer-2", rec.EventData.Parameters["model"])
+		assert.Equal(t, "bc-created", rec.EventData.Parameters["agent_id"])
+	})
+
+	t.Run("get_agent", func(t *testing.T) {
+		*recs = (*recs)[:0]
+		result, _, err := p.mcpGetAgent(ctx, nil, getAgentInput{AgentID: "bc-get"})
+		require.NoError(t, err)
+		assert.Nil(t, result)
+		rec := requireAudit(t, recs, auditEventMCPGetAgent, "get_agent", model.AuditStatusSuccess)
+		assert.Equal(t, testMCPUserID, rec.Actor.UserId)
+		assert.Equal(t, "bc-get", rec.EventData.Parameters["agent_id"])
+		_, hasSummary := rec.EventData.Parameters["summary"]
+		assert.False(t, hasSummary)
+	})
+
+	t.Run("list_agents", func(t *testing.T) {
+		*recs = (*recs)[:0]
+		limit := 5
+		result, _, err := p.mcpListAgents(ctx, nil, listAgentsInput{Limit: &limit})
+		require.NoError(t, err)
+		assert.Nil(t, result)
+		rec := requireAudit(t, recs, auditEventMCPListAgents, "list_agents", model.AuditStatusSuccess)
+		assert.Equal(t, testMCPUserID, rec.Actor.UserId)
+		assert.Equal(t, 5, rec.EventData.Parameters["limit"])
+	})
+
+	t.Run("add_followup", func(t *testing.T) {
+		*recs = (*recs)[:0]
+		result, _, err := p.mcpAddFollowup(ctx, nil, addFollowupInput{
+			AgentID: "bc-follow",
+			Prompt:  "also update tests and paste a token",
+		})
+		require.NoError(t, err)
+		assert.Nil(t, result)
+		rec := requireAudit(t, recs, auditEventMCPAddFollowup, "add_followup", model.AuditStatusSuccess)
+		assert.Equal(t, testMCPUserID, rec.Actor.UserId)
+		assert.Equal(t, "bc-follow", rec.EventData.Parameters["agent_id"])
+	})
+
+	t.Run("get_agent_conversation", func(t *testing.T) {
+		*recs = (*recs)[:0]
+		result, _, err := p.mcpGetAgentConversation(
+			ctx,
+			nil,
+			getAgentConversationInput{AgentID: "bc-conversation"},
+		)
+		require.NoError(t, err)
+		assert.Nil(t, result)
+		rec := requireAudit(t, recs, auditEventMCPGetAgentConversation, "get_agent_conversation", model.AuditStatusSuccess)
+		assert.Equal(t, testMCPUserID, rec.Actor.UserId)
+		assert.Equal(t, "bc-conversation", rec.EventData.Parameters["agent_id"])
+	})
+}
+
+func TestMCPToolAuditMissingUserID(t *testing.T) {
+	p := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("upstream should not be called without an acting user")
+	}))
+	p.getMCPUserID = func(context.Context) string { return "" }
+	recs := attachAuditCapture(p)
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		event string
+		tool  string
+		call  func() *mcp.CallToolResult
+	}{
+		{
+			name:  "create_agent",
+			event: auditEventMCPCreateAgent,
+			tool:  "create_agent",
+			call: func() *mcp.CallToolResult {
+				result, _, _ := p.mcpCreateAgent(ctx, nil, createAgentInput{
+					Prompt:     "should not launch",
+					Repository: "https://github.com/acme/repo",
+				})
+				return result
+			},
+		},
+		{
+			name:  "get_agent",
+			event: auditEventMCPGetAgent,
+			tool:  "get_agent",
+			call: func() *mcp.CallToolResult {
+				result, _, _ := p.mcpGetAgent(ctx, nil, getAgentInput{AgentID: "bc-get"})
+				return result
+			},
+		},
+		{
+			name:  "list_agents",
+			event: auditEventMCPListAgents,
+			tool:  "list_agents",
+			call: func() *mcp.CallToolResult {
+				result, _, _ := p.mcpListAgents(ctx, nil, listAgentsInput{})
+				return result
+			},
+		},
+		{
+			name:  "add_followup",
+			event: auditEventMCPAddFollowup,
+			tool:  "add_followup",
+			call: func() *mcp.CallToolResult {
+				result, _, _ := p.mcpAddFollowup(ctx, nil, addFollowupInput{
+					AgentID: "bc-follow",
+					Prompt:  "should not send",
+				})
+				return result
+			},
+		},
+		{
+			name:  "get_agent_conversation",
+			event: auditEventMCPGetAgentConversation,
+			tool:  "get_agent_conversation",
+			call: func() *mcp.CallToolResult {
+				result, _, _ := p.mcpGetAgentConversation(
+					ctx,
+					nil,
+					getAgentConversationInput{AgentID: "bc-conversation"},
+				)
+				return result
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			*recs = (*recs)[:0]
+			result := test.call()
+			require.NotNil(t, result)
+			assert.True(t, result.IsError)
+			require.Len(t, result.Content, 1)
+			text, ok := result.Content[0].(*mcp.TextContent)
+			require.True(t, ok)
+			assert.Equal(t, missingMCPUserMessage, text.Text)
+			rec := requireAudit(t, recs, test.event, test.tool, model.AuditStatusFail)
+			assert.Empty(t, rec.Actor.UserId)
+			assert.Equal(t, "missing acting user ID", rec.Error.Description)
+		})
+	}
+}
+
+func TestMCPToolAuditMissingKeyStillRecordsActor(t *testing.T) {
+	p := newTestPlugin(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("upstream should not be called without the service account API key")
+	}))
+	config := *p.getConfiguration()
+	config.ServiceAccountAPIKey = ""
+	p.setConfiguration(&config)
+	recs := attachAuditCapture(p)
+
+	result, _, err := p.mcpGetAgent(context.Background(), nil, getAgentInput{AgentID: "bc-get"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	rec := requireAudit(t, recs, auditEventMCPGetAgent, "get_agent", model.AuditStatusFail)
+	assert.Equal(t, testMCPUserID, rec.Actor.UserId)
+	assert.Equal(t, "bc-get", rec.EventData.Parameters["agent_id"])
+	assert.Equal(t, "service account API key is not configured", rec.Error.Description)
 }
