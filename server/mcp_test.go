@@ -27,13 +27,15 @@ func TestServeHTTPRejectsGuestsOnMCP(t *testing.T) {
 	tests := []struct {
 		name       string
 		userID     string
+		pluginID   string
 		lookup     func(string) (*model.User, error)
 		wantStatus int
 		wantBody   string
 	}{
 		{
-			name:   "guest",
-			userID: "guest-1",
+			name:     "guest",
+			userID:   "guest-1",
+			pluginID: agentsPluginID,
 			lookup: func(userID string) (*model.User, error) {
 				return &model.User{Id: userID, Roles: model.SystemGuestRoleId}, nil
 			},
@@ -41,8 +43,9 @@ func TestServeHTTPRejectsGuestsOnMCP(t *testing.T) {
 			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
 		},
 		{
-			name:   "lookup error",
-			userID: "user-1",
+			name:     "lookup error",
+			userID:   "user-1",
+			pluginID: agentsPluginID,
 			lookup: func(string) (*model.User, error) {
 				return nil, errors.New("lookup failed")
 			},
@@ -51,12 +54,27 @@ func TestServeHTTPRejectsGuestsOnMCP(t *testing.T) {
 		},
 		{
 			name:       "missing user",
+			pluginID:   agentsPluginID,
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
+		},
+		{
+			name:       "spoofed user ID without plugin ID",
+			userID:     "user-1",
+			wantStatus: http.StatusForbidden,
+			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
+		},
+		{
+			name:       "spoofed user ID with wrong plugin ID",
+			userID:     "user-1",
+			pluginID:   "com.evil.plugin",
 			wantStatus: http.StatusForbidden,
 			wantBody:   `{"error":"Guests cannot use Cursor Cloud Agents"}`,
 		},
 		{
 			name:       "regular user reaches MCP server",
 			userID:     "user-1",
+			pluginID:   agentsPluginID,
 			wantStatus: http.StatusServiceUnavailable,
 		},
 	}
@@ -69,6 +87,9 @@ func TestServeHTTPRejectsGuestsOnMCP(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, mcpBasePath, nil)
 			if test.userID != "" {
 				request.Header.Set("X-Mattermost-UserID", test.userID)
+			}
+			if test.pluginID != "" {
+				request.Header.Set("Mattermost-Plugin-ID", test.pluginID)
 			}
 			recorder := httptest.NewRecorder()
 			p.ServeHTTP(nil, recorder, request)

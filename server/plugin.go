@@ -17,6 +17,7 @@ import (
 const (
 	pluginID           = "com.mattermost.plugin-cursor"
 	mcpBasePath        = "/mcp"
+	agentsPluginID     = "mattermost-ai"
 	guestDeniedMessage = "Guests cannot use Cursor Cloud Agents"
 )
 
@@ -55,7 +56,8 @@ func (p *Plugin) OnDeactivate() error {
 func (p *Plugin) ServeHTTP(_ *plugin.Context, w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == mcpBasePath || strings.HasPrefix(r.URL.Path, mcpBasePath+"/") {
 		userID := r.Header.Get("X-Mattermost-UserID")
-		if userID == "" || p.isGuestUserID(userID) {
+		// Mattermost-Plugin-ID is server-set on PluginHTTP; X-Mattermost-UserID is not.
+		if r.Header.Get("Mattermost-Plugin-ID") != agentsPluginID || userID == "" || p.isGuestUserID(userID) {
 			writeError(w, http.StatusForbidden, guestDeniedMessage)
 			return
 		}
